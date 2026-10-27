@@ -1,0 +1,3679 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+    <script>
+      (function() {
+        // Capture host references before any artifact code runs: Window.parent
+        // is [Replaceable] (a top-level `var parent` in artifact code would
+        // replace the accessor with a data property), and a top-level
+        // `const crypto` would shadow the global — either would otherwise
+        // silently break the bridge for artifacts that worked before.
+        const realParent = window.parent;
+        const cryptoObj = window.crypto;
+        const RealURL = URL;
+        const realDecodeURIComponent = decodeURIComponent;
+        const RealTextEncoder = TextEncoder;
+        const realAtob = atob;
+        const RealString = String;
+        // html-to-image is only used by takeScreenshot: fetched on first use, not as a
+        // parser-blocking tag. Native fetch, captured before the proxy override below.
+        const realFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+        const HTML_TO_IMAGE_SRC = "https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js";
+        const HTML_TO_IMAGE_INTEGRITY = "sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==";
+        let htmlToImageLoad = null;
+        const loadHtmlToImage = () => {
+          if (!htmlToImageLoad) {
+            htmlToImageLoad = (realFetch
+              ? realFetch(HTML_TO_IMAGE_SRC, { integrity: HTML_TO_IMAGE_INTEGRITY, credentials: 'omit', referrerPolicy: 'no-referrer' })
+              : Promise.reject(new Error('fetch unavailable'))
+            )
+              .then((res) => {
+                if (!res.ok) throw new Error('html-to-image failed to load (' + res.status + ')');
+                return res.text();
+              })
+              .then((source) => {
+                // UMD bundle: hide the artifact's AMD/CommonJS globals so it takes the
+                // window-global branch; inline script text runs synchronously on insert.
+                const hidden = ['define', 'module', 'exports'].map((k) => {
+                  const entry = { k, own: Object.prototype.hasOwnProperty.call(window, k), v: window[k] };
+                  try { window[k] = undefined; } catch (e) {}
+                  return entry;
+                });
+                try {
+                  const el = document.createElement('script');
+                  el.text = source;
+                  (document.head || document.documentElement).appendChild(el);
+                } finally {
+                  hidden.forEach(({ k, own, v }) => {
+                    try { if (own) { window[k] = v; } else { delete window[k]; } } catch (e) {}
+                  });
+                }
+                if (!window.htmlToImage) throw new Error('html-to-image unavailable after load');
+                return window.htmlToImage;
+              });
+            // A failed load may be transient; let the next screenshot retry.
+            htmlToImageLoad.catch(() => { htmlToImageLoad = null; });
+          }
+          return htmlToImageLoad;
+        };
+        // crypto.randomUUID exists only in Secure Contexts; fall back to a
+        // unique non-crypto id elsewhere (http://LAN-IP dev flows) —
+        // uniqueness is what the bridge needs, unpredictability is
+        // defense-in-depth on top of the source guards.
+        const newRequestId =
+          cryptoObj && typeof cryptoObj.randomUUID === "function"
+            ? function () { return cryptoObj.randomUUID(); }
+            : function () { return Date.now() + "-" + Math.random(); };
+
+        // Bridge request ids are crypto-random (not sequential) so they
+        // cannot be predicted by other frames in the tab.
+        let callbacksMap = new Map();
+        let streamControllers = new Map();
+        
+        window.claude = {
+          complete: (prompt) => {
+            return new Promise((resolve, reject) => {
+              const id = newRequestId();
+              callbacksMap.set(id, { resolve, reject });
+              realParent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+            });
+          }
+        };
+
+        // storage.get and .list calls not yet answered, read by the parent at this frame's 'load' (an answer may restyle the page); counted
+        // here, not there, because WebKit can run this frame's 'load' in the parent before a message posted while parsing has arrived.
+        let storageReadsOut = 0;
+        try { Object.defineProperty(window, '__storageReadsOut', { configurable: true, get: () => storageReadsOut }); } catch (e) {}
+        window.storage = {
+          get: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = newRequestId();
+              callbacksMap.set(id, { resolve, reject });
+              realParent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+              storageReadsOut += 1;
+            });
+          },
+          set: (key, value, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = newRequestId();
+              callbacksMap.set(id, { resolve, reject });
+              realParent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+            });
+          },
+          delete: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = newRequestId();
+              callbacksMap.set(id, { resolve, reject });
+              realParent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+            });
+          },
+          list: (prefix, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = newRequestId();
+              callbacksMap.set(id, { resolve, reject });
+              realParent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+              storageReadsOut += 1;
+            });
+          }
+        };
+
+        let pendingBlobs = new Map();
+        URL.createObjectURL = (blob) => {
+          // Store the blob and create an ID and URL for it
+          const blobId = `blob-${Date.now()}-${Math.random()}`;
+          pendingBlobs.set(blobId, blob);
+          return `blob-request://${blobId}`;
+        };
+
+        URL.revokeObjectURL = (url) => {
+          // Remove the blob from our store
+          const blobId = url.replace("blob-request://", "");
+          pendingBlobs.delete(blobId);
+        };
+
+        const getBlobFromURL = (url) => {
+          const blobId = url.replace("blob-request://", "");
+          return pendingBlobs.get(blobId);
+        };
+
+        // Override global fetch with streaming support
+        window.fetch = (url, init = {}) => {
+          return new Promise((resolve, reject) => {
+            const id = newRequestId();
+            const channelId = `fetch-${id}-${Date.now()}`;
+            
+            callbacksMap.set(id, { 
+              resolve: (response) => {
+                // Null-body statuses: Response(stream, {status: 204}) throws
+                // per the Fetch spec, which would escape this resolver and
+                // hang the artifact's await forever.
+                if (response.status === 204 || response.status === 205 || response.status === 304) {
+                  try {
+                    resolve(new Response(null, {
+                      status: response.status,
+                      statusText: response.statusText,
+                      headers: response.headers
+                    }));
+                  } catch (err) {
+                    // Invalid statusText/header bytes can throw here too.
+                    reject(new TypeError(
+                      'Bridge fetch: unconstructable response (status ' + response.status + ')'
+                    ));
+                  }
+                  return;
+                }
+                // Create a ReadableStream for the response body
+                const stream = new ReadableStream({
+                  start(controller) {
+                    streamControllers.set(channelId, controller);
+                  },
+                  cancel() {
+                    streamControllers.delete(channelId);
+                  }
+                });
+                
+                // Create and return the Response with the stream. Response()
+                // requires status in [200, 599]; an opaque/no-cors fetch
+                // forwards status 0, which would throw here and escape the
+                // resolver, hanging the artifact's await. Surface it as a
+                // network-error-shaped rejection instead.
+                try {
+                  resolve(new Response(stream, {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers
+                  }));
+                } catch (err) {
+                  streamControllers.delete(channelId);
+                  reject(new TypeError(
+                    'Bridge fetch: unconstructable response (status ' + response.status + ')'
+                  ));
+                }
+              },
+              reject,
+              channelId
+            });
+            
+            realParent.postMessage({
+              type: 'proxyFetch',
+              id,
+              url,
+              init,
+              channelId
+            }, '*');
+          });
+        };
+
+        window.addEventListener('message', async (event) => {
+          // Only the embedding parent may drive the bridge — sibling and
+          // nested frames can also postMessage into this window.
+          if (event.source !== realParent) return;
+          if (event.data.type === 'takeScreenshot') {
+            // Echo the request's nonce so the requester can correlate the
+            // reply to ITS request — a reply without the expected nonce
+            // (e.g. from a stale pre-remount artifact) is ignored upstream.
+            const screenshotNonce = event.data.nonce;
+            const rootElement = document.getElementById('artifacts-component-root-html');
+            if (!rootElement) {
+              realParent.postMessage({
+                type: 'screenshotError',
+                nonce: screenshotNonce,
+                error: new Error('Root element not found'),
+              }, '*');
+              return;
+            }
+            // Catch CDN load failures and toPng errors so the parent always
+            // gets a response instead of hanging forever.
+            try {
+              const htmlToImage = await loadHtmlToImage();
+              const screenshot = await htmlToImage.toPng(rootElement, {
+                imagePlaceholder:
+                  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+              });
+              realParent.postMessage({
+                type: 'screenshotData',
+                nonce: screenshotNonce,
+                data: screenshot,
+              }, '*');
+            } catch (err) {
+              realParent.postMessage({
+                type: 'screenshotError',
+                nonce: screenshotNonce,
+                error: err instanceof Error ? err : new Error(String(err)),
+              }, '*');
+            }
+          } else if (event.data.type === 'claudeComplete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.completion);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'proxyFetchResponse') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+              callbacksMap.delete(event.data.id);
+            } else {
+              // Initial response with headers, status, etc.
+              callback.resolve({
+                status: event.data.status,
+                statusText: event.data.statusText,
+                headers: event.data.headers
+              });
+              // Don't delete the callback yet if streaming
+              if (!event.data.body) {
+                callbacksMap.delete(event.data.id);
+              }
+            }
+          } else if (event.data.type === 'proxyFetchStream') {
+            // Handle streaming data chunks
+            const controller = streamControllers.get(event.data.channelId);
+            if (controller) {
+              if (event.data.error) {
+                controller.error(new Error(event.data.error));
+                streamControllers.delete(event.data.channelId);
+              } else if (event.data.done) {
+                controller.close();
+                streamControllers.delete(event.data.channelId);
+                // Clean up the callback
+                const callback = Array.from(callbacksMap.entries()).find(
+                  ([_, value]) => value.channelId === event.data.channelId
+                );
+                if (callback) {
+                  callbacksMap.delete(callback[0]);
+                }
+              } else if (event.data.chunk) {
+                controller.enqueue(new Uint8Array(event.data.chunk));
+              }
+            }
+          } else if (event.data.type === 'storageGet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            storageReadsOut -= 1;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageSet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageDelete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageList') {
+            const callback = callbacksMap.get(event.data.id);
+            if (!callback) return;
+            storageReadsOut -= 1;
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          }
+        });
+
+        // An SVG <a> exposes href as an SVGAnimatedString; its baseVal is the attribute
+        // as written, so resolve it against the base URL as the browser does for an HTML <a>.
+        const resolvedHref = (linkEl) => {
+          if (typeof linkEl.href === "string") return linkEl.href;
+          const written = linkEl.href?.baseVal;
+          // A same-document SVG link, such as one that begins an animation, stays with the browser.
+          if (!written || written.trim().startsWith("#")) return "";
+          try {
+            return new RealURL(written, linkEl.baseURI).href;
+          } catch (error) {
+            return written;
+          }
+        };
+
+        // This frame's URL is about:srcdoc, so the browser resolves "#id" against the renderer
+        // page and would load that page in the frame instead of scrolling.
+        const sameDocumentFragment = (linkEl) => {
+          const written = linkEl.getAttribute("href")?.trim();
+          if (!written?.startsWith("#") || document.querySelector("base[href]")) return null;
+          return written.slice(1);
+        };
+
+        const scrollToFragment = (fragment) => {
+          let decoded = fragment;
+          try {
+            decoded = realDecodeURIComponent(fragment);
+          } catch (error) {}
+          let target = document.getElementById(fragment) ?? document.getElementById(decoded);
+          for (const named of target ? [] : document.getElementsByName(decoded)) {
+            if (named.localName === "a") {
+              target = named;
+              break;
+            }
+          }
+          if (target) {
+            target.scrollIntoView();
+          } else if (decoded.toLowerCase() === "top") {
+            window.scrollTo(0, 0);
+          } else {
+            return false;
+          }
+          return true;
+        };
+
+        // Same decoder as dataUrlFile in app/page.tsx; change both together.
+        const hexPair = /^[0-9a-f]{2}$/i;
+        const dataUrlFile = (href) => {
+          const hash = href.indexOf("#");
+          const url = hash === -1 ? href : href.slice(0, hash);
+          const comma = url.indexOf(",");
+          if (comma === -1) return null;
+          const header = url.slice(0, comma);
+          const payload = url.slice(comma + 1);
+          const mimeMatch = header.match(/data:([^;]+)/);
+          const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+          const declaredBase64 = header
+            .split(";")
+            .slice(1)
+            .some((param) => param.trim().toLowerCase() === "base64");
+          const type = mimeMatch ? mimeMatch[1].trim().toLowerCase() : "";
+          const binaryType = type !== "" && !type.startsWith("text/");
+          if (declaredBase64 || (binaryType && !payload.includes("%"))) {
+            let binary = null;
+            try {
+              binary = realAtob(
+                payload.replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16))),
+              );
+            } catch (error) {
+              if (declaredBase64) return null;
+            }
+            if (binary !== null) {
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              return { mimeType, data: bytes.buffer };
+            }
+          }
+          const input = new RealTextEncoder().encode(payload);
+          const bytes = new Uint8Array(input.length);
+          let length = 0;
+          for (let i = 0; i < input.length; i++) {
+            if (input[i] === 0x25 && i + 2 < input.length) {
+              const pair = String.fromCharCode(input[i + 1], input[i + 2]);
+              if (hexPair.test(pair)) {
+                bytes[length++] = parseInt(pair, 16);
+                i += 2;
+                continue;
+              }
+            }
+            bytes[length++] = input[i];
+          }
+          return { mimeType, data: bytes.slice(0, length).buffer };
+        };
+
+        window.addEventListener('click', (event) => {
+          // Not instanceof Element: an artifact's own top-level class Element shadows the global.
+          if (typeof event.target?.closest !== "function") return;
+    
+          const linkEl = event.target.closest("a");
+          const href = linkEl && resolvedHref(linkEl);
+          if (!href) return;
+
+          const fragment = sameDocumentFragment(linkEl);
+          if (fragment !== null) {
+            const handledByArtifact = event.defaultPrevented;
+            event.preventDefault();
+            if (handledByArtifact || fragment === "" || scrollToFragment(fragment)) return;
+            // A fragment that names nothing in the artifact may name something in the host,
+            // such as a project thread. The artifact's own listeners still see the click.
+            realParent.postMessage({ type: 'openExternal', href }, '*');
+            return;
+          }
+          const filename = linkEl.getAttribute("download") ?? "";
+    
+          event.preventDefault();
+          event.stopImmediatePropagation();
+    
+          if (href.startsWith("blob-request:")) {
+            const blob = getBlobFromURL(href);
+            if (!blob) return;
+            void blob.arrayBuffer().then((data) => {
+              realParent.postMessage({
+                type: "downloadFile",
+                filename,
+                data,
+                mimeType: blob.type || "application/octet-stream",
+              });
+            });
+          } else if (href.startsWith("data:")) {
+            const file = dataUrlFile(href);
+            if (!file) return;
+            realParent.postMessage({
+              type: "downloadFile",
+              filename,
+              data: file.data,
+              mimeType: file.mimeType,
+            });
+          } else {
+            let linkUrl;
+            try {
+              linkUrl = new URL(href);
+            } catch (error) {
+              return;
+            }
+    
+            if (linkUrl.hostname === window.location.hostname) return;
+      
+            realParent.postMessage({
+              type: 'openExternal',
+              href,
+            }, '*');
+          }
+      });
+
+        const originalOpen = window.open;
+        window.open = function (url) {
+          realParent.postMessage({
+            type: "openExternal",
+            href: url,
+          }, "*");
+        };
+
+        window.addEventListener('error', (event) => {
+          realParent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+        });
+
+        // Last, so that a throw here leaves the bridge laid.
+        // As join(' ') words each argument, but for a Symbol or an object with no toString, at which join throws in the page's own call.
+        const worded = (arg) => {
+          try {
+            return RealString(arg ?? '');
+          } catch {
+            return '[object Object]';
+          }
+        };
+        [['log', ''], ['error', 'Error: '], ['warn', 'Warning: ']].forEach(([method, prefix]) => {
+          if (typeof window.console?.[method] !== 'function') return;
+          const native = window.console[method].bind(window.console);
+          window.console[method] = (...args) => {
+            native(...args);
+            realParent.postMessage({ type: 'console', message: prefix + args.map(worded).join(' ') }, '*');
+          };
+        });
+      })();
+    </script>
+  <style id="claude-scrollbar">@layer claude-scrollbar{*{scrollbar-width:thin}html{scrollbar-color:rgb(128 128 128 / 50%) transparent}}</style><script>
+(function () {
+  "use strict";
+  if (window.__coworkHtmlReviewGuest) return;
+  window.__coworkHtmlReviewGuest = true;
+
+  var READY_TYPE = "__cowork_html_review_ready__";
+  var SEL_CLASS = "__cwhr-sel";
+  var CONTEXT_LEN = 32;
+  var EXACT_CAP = 1000;
+  var port = null;
+  var mode = false;
+  var pins = [];
+  var quotes = [];
+  // Resolved Range per quote id; invalidated on DOM mutation and on a
+  // fresh quotes set. Scroll/resize re-reports just re-read
+  // getClientRects() from the cached Range. Null prototype - ids are
+  // collaborator-writable and must not collide with Object.prototype.
+  var quoteRanges = Object.create(null);
+  var hoverEl = null;
+  var selected = null;
+  var hasTextSel = false;
+  var rafPending = false;
+  // Capture before page body scripts can shadow them; start() defers
+  // to DOMContentLoaded which page code can race.
+  var _MessageChannel = window.MessageChannel;
+  var _topPost = window.top.postMessage.bind(window.top);
+
+  function visibleText(el) {
+    // innerText drops display:none/visibility:hidden subtrees; keep an
+    // empty innerText (icon-only el) rather than falling through to
+    // textContent which would re-include hidden text.
+    var t = typeof el.innerText === "string" ? el.innerText : (el.textContent || "");
+    return t.replace(/\s+/g, " ").trim();
+  }
+
+  // Comment-mode cursor: see HTML_PREVIEW_COMMENT_CURSOR above.
+  var BUBBLE_CURSOR = "url(\"data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'24'%20height%3D'24'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20d%3D'M12%20.5h0A11.5%2011.5%200%200%201%2023.5%2012v0A11.5%2011.5%200%200%201%2012%2023.5H2.5a2%202%200%200%201-2-2V12A11.5%2011.5%200%200%201%2012%20.5Z'%20fill%3D'%23fff'%20stroke%3D'rgba(0%2C0%2C0%2C0.22)'%20stroke-width%3D'1'%2F%3E%3C%2Fsvg%3E\") 1 23, url(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACjklEQVR4AbRWS2gaURR9TGpiFTUEWpKQkA+EruqizWcRSBRT/G8KKpXiyo0ra1fVNiDFLmypFUo3iht/iO4Uay1FGwtFECl1p6KWLly4CGqrSMTY+wRFQ7WhGYd7Zu697845b+7M8B6BJh+UxcXFG3a7XeTxeHQAC+C12+1+ZLPZhHgMbp8FjLWxAkaj8U48Hg8lEomfIpEoLBaLLTKZTAd4LJFI3kD8HsZ+xGKxoMFgYI9T+JvAtUAg8FylUn3hcDj8ra0t6vLyMmKxWIhCofSAfZyDMRqXy+Wr1eqvPp/vKYjMAEZsRMDpdN6MRCKf+Xz+8cbGBm2kckIAtXShUGgKh8Mnfr9/Ybh0IKDT6a4vLS19EggE+wwGY7jmUj6TyUTQyv35+fmP0MbBexkISKVS+97e3u1LsU0oAo67Go3G1i/pCZjN5t3Nzc0H/zPzPlH/ip8EWvbQYrHs4hwWmN3e3n62traGfZy7MtbX12fYbPYTIKIQOzs7C6urq/cgINVWVlaO4EtjEXq9nken06mksgMZtJthtVp5xNzcHBsEIEWu0Wg0RKVS2USz2WTigFx6hPCkMTfRarXgB6WQzd/j63Q6bdK+nB7j0KnRaCCCIMpTE4D2oEql8m1qAvV6/VSr1U5PIJvN+qFjv6fyBIVC4ZfD4XgJAmekC9RqNZROp1+FQqESCCDSBWCVO1EoFC8wOQZpAnjm0Wj0O/xX94H4HNAzotvtNnreFU6lUgllMplAMpnclcvlp8NURC6Xi8BLGc5N9NvtNqpWq6hcLqN8Pn8OLUkAMe/g4EAOG4WzizcTJpPpA6zFIpfL9Ra2I45/IRgM2lKp1LtisXjs9XpvHR4eHimVythF4n78BwAA//8r8OPFAAAABklEQVQDAPCY8Oae0TJxAAAAAElFTkSuQmCC\") 1 23, default";
+
+  function injectStyle() {
+    var style = document.createElement("style");
+    // Hover box is painted by the host (from streamed rects); the guest
+    // marks the selected element and, in comment mode, swaps the native
+    // cursor for the comment bubble (forced, so page cursor styles don't
+    // fight the picker). While a composer or thread card is open the arrow
+    // returns, so the bubble cursor and the pin just placed never show at
+    // once. Keyed on <html> data attributes, which page scripts that
+    // rewrite body.className leave alone; ":not(#_)" lifts the rules to
+    // id-level specificity so a page's own !important cursor rules lose.
+    var ANY = ":not(#__cwhr_)";
+    var MODE = "html[data-cwhr-mode]";
+    var COMPOSING = MODE + "[data-cwhr-composing]";
+    style.textContent =
+      "." + SEL_CLASS + "{outline:1px solid hsl(40 70% 40%) !important;outline-offset:0;}" +
+      MODE + ANY + "," + MODE + " " + ANY + "{cursor:" + BUBBLE_CURSOR + " !important;}" +
+      COMPOSING + ANY + "," + COMPOSING + " " + ANY + "{cursor:default !important;}";
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function isUnique(sel) {
+    try {
+      return document.querySelectorAll(sel).length === 1;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Mirrors the host's stripInvisibles ranges. The host strips these
+  // from stored selectors, so a selector built on a value containing
+  // them would validate here but never match again - skip those rungs
+  // and fall through to the structural ladder instead.
+  function hasInvisibles(s) {
+    for (var i = 0; i < s.length; i++) {
+      var c = s.codePointAt(i);
+      if (c > 0xffff) i++;
+      if (
+        c <= 0x1f ||
+        c === 0x061c ||
+        c === 0x070f ||
+        c === 0xad ||
+        (c >= 0x7f && c <= 0x9f) ||
+        c === 0x115f ||
+        c === 0x1160 ||
+        c === 0x180e ||
+        (c >= 0x200b && c <= 0x200f) ||
+        (c >= 0x202a && c <= 0x202e) ||
+        (c >= 0x2060 && c <= 0x2064) ||
+        (c >= 0x2066 && c <= 0x2069) ||
+        c === 0x3164 ||
+        c === 0xfeff ||
+        (c >= 0xfff9 && c <= 0xfffb) ||
+        c === 0xffa0 ||
+        (c >= 0xe0000 && c <= 0xe007f)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function escapeAttr(v) {
+    return String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  // Selector ladder: unique #id -> unique [data-*] -> structural
+  // tag:nth-of-type path rooted at the nearest unique-id ancestor.
+  function selectorFor(el) {
+    if (el.id && !hasInvisibles(el.id) && isUnique("#" + CSS.escape(el.id))) {
+      return "#" + CSS.escape(el.id);
+    }
+    for (var i = 0; i < el.attributes.length; i++) {
+      var attr = el.attributes[i];
+      if (
+        attr.name.indexOf("data-") === 0 &&
+        attr.value &&
+        !hasInvisibles(attr.value)
+      ) {
+        var dataSel = "[" + attr.name + '="' + escapeAttr(attr.value) + '"]';
+        if (isUnique(dataSel)) return dataSel;
+      }
+    }
+    var parts = [];
+    var cur = el;
+    while (cur && cur !== document.body && cur.nodeType === 1 && parts.length < 10) {
+      var sel = cur.tagName.toLowerCase();
+      var parent = cur.parentElement;
+      if (parent) {
+        var sameTag = [];
+        for (var c = 0; c < parent.children.length; c++) {
+          if (parent.children[c].tagName === cur.tagName) sameTag.push(parent.children[c]);
+        }
+        if (sameTag.length > 1) {
+          sel += ":nth-of-type(" + (sameTag.indexOf(cur) + 1) + ")";
+        }
+      }
+      parts.unshift(sel);
+      if (
+        parent &&
+        parent.id &&
+        !hasInvisibles(parent.id) &&
+        isUnique("#" + CSS.escape(parent.id))
+      ) {
+        parts.unshift("#" + CSS.escape(parent.id));
+        return parts.join(" > ");
+      }
+      cur = parent;
+    }
+    if (cur === document.body) {
+      parts.unshift("body");
+      return parts.join(" > ");
+    }
+    // Depth cap hit without a root - an unrooted chain would match the
+    // first structural pattern anywhere in the document. Mark the pin
+    // detached instead of attaching it to the wrong element.
+    return ":not(*)";
+  }
+
+  function descriptorFor(el) {
+    var tag = "<" + el.tagName.toLowerCase() + ">";
+    var idPart = el.id ? " #" + el.id : "";
+    var text = visibleText(el).slice(0, 60);
+    var textPart = text ? ' "' + text + '"' : "";
+    // Nearest id'd ancestor, skipping the UCR-injected
+    // #artifacts-component-root-* wrapper which is implementation noise.
+    var section = el.parentElement;
+    while (
+      section &&
+      (!section.id || section.id.indexOf("artifacts-component-root") === 0)
+    ) {
+      section = section.parentElement;
+    }
+    var sectionPart = section && section.id ? " in #" + section.id : "";
+    return (tag + idPart + textPart + sectionPart).slice(0, 400);
+  }
+
+  // textContent offset of (node, offset) within body - the coordinate
+  // system text-quote anchors are stored in. -1 when the boundary
+  // isn't under body (shadow root, detached).
+  function textOffset(node, offset) {
+    var body = document.body;
+    if (!body) return -1;
+    try {
+      var pre = document.createRange();
+      pre.selectNodeContents(body);
+      pre.setEnd(node, offset);
+      return pre.toString().length;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  // Inverse: build a Range covering [start, end) in body.textContent.
+  function rangeForOffsets(start, end) {
+    var body = document.body;
+    if (!body) return null;
+    var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    var acc = 0;
+    var range = document.createRange();
+    var haveStart = false;
+    var t;
+    while ((t = walker.nextNode())) {
+      var next = acc + t.length;
+      if (!haveStart && start < next) {
+        range.setStart(t, start - acc);
+        haveStart = true;
+      }
+      if (haveStart && end <= next) {
+        range.setEnd(t, end - acc);
+        return range;
+      }
+      acc = next;
+    }
+    return null;
+  }
+
+  // Context-scored search (W3C text-quote resolution): slice-check the
+  // hint, else pick the occurrence whose surrounding chars best match
+  // prefix/suffix. MIRRORS locateTextQuote() above line-for-line - the
+  // tested export is the contract; this copy is what the sandbox runs.
+  function locateQuote(text, q) {
+    var ex = q.exact;
+    if (!ex) return null;
+    var hint = q.startOffset >= 0 ? q.startOffset : 0;
+    if (text.slice(hint, hint + ex.length) === ex) {
+      return { start: hint, end: hint + ex.length };
+    }
+    var best = -1;
+    var bestScore = -1;
+    var bestDist = Infinity;
+    var scanned = 0;
+    for (var idx = text.indexOf(ex); idx !== -1 && ++scanned <= 1000; idx = text.indexOf(ex, idx + 1)) {
+      var before = text.slice(Math.max(0, idx - CONTEXT_LEN), idx);
+      var after = text.slice(idx + ex.length, idx + ex.length + CONTEXT_LEN);
+      var sc = 0;
+      for (var i = 1; i <= q.prefix.length && i <= before.length; i++) {
+        if (q.prefix[q.prefix.length - i] !== before[before.length - i]) break;
+        sc++;
+      }
+      for (var j = 0; j < q.suffix.length && j < after.length; j++) {
+        if (q.suffix[j] !== after[j]) break;
+        sc++;
+      }
+      var dist = Math.abs(idx - hint);
+      if (sc > bestScore || (sc === bestScore && dist < bestDist)) {
+        best = idx;
+        bestScore = sc;
+        bestDist = dist;
+      }
+    }
+    return best === -1 ? null : { start: best, end: best + ex.length };
+  }
+
+  function collectLineRects(range, cap) {
+    var out = [];
+    var rects = range.getClientRects();
+    for (var i = 0; i < rects.length && out.length < cap; i++) {
+      var r = rects[i];
+      if (r.width > 0 && r.height > 0) {
+        out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      }
+    }
+    return out;
+  }
+
+  function reportTextSel(full) {
+    if (!port) return;
+    var sel = window.getSelection();
+    var r = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    if (!r || !document.body || !document.body.contains(r.commonAncestorContainer)) {
+      if (hasTextSel) {
+        hasTextSel = false;
+        port.postMessage({ type: "textClear" });
+      }
+      return;
+    }
+    hasTextSel = true;
+    var br = r.getBoundingClientRect();
+    var msg = {
+      type: "textCapture",
+      rect: { x: br.left, y: br.top, w: br.width, h: br.height },
+      lineRects: collectLineRects(r, 80),
+    };
+    if (full) {
+      var live = document.body.textContent || "";
+      var so = textOffset(r.startContainer, r.startOffset);
+      var eo = textOffset(r.endContainer, r.endOffset);
+      if (so < 0 || eo < 0 || eo <= so) {
+        // Unanchorable selection (shadow root, foreign node). A
+        // rect-only post here would make the host pair the new rect
+        // with a stale prior anchor - clear instead.
+        hasTextSel = false;
+        port.postMessage({ type: "textClear" });
+        return;
+      }
+      // Denomination invariant: exact/prefix/suffix are byte-identical
+      // slices of body.textContent. Truncation adjusts endOffset so
+      // the host's (endOffset - startOffset === exact.length) shape
+      // check holds. Cut points back off surrogate halves - a lone
+      // surrogate would never relocate and fails UTF-8 persist.
+      var capped = Math.min(eo, so + EXACT_CAP);
+      if (capped < eo) {
+        var hc = live.charCodeAt(capped - 1);
+        if (hc >= 0xd800 && hc <= 0xdbff) capped--;
+      }
+      if (capped <= so) {
+        port.postMessage(msg);
+        return;
+      }
+      var pStart = Math.max(0, so - CONTEXT_LEN);
+      var pc = live.charCodeAt(pStart);
+      if (pc >= 0xdc00 && pc <= 0xdfff) pStart++;
+      var sEnd = Math.min(live.length, capped + CONTEXT_LEN);
+      if (sEnd < live.length) {
+        var sc = live.charCodeAt(sEnd - 1);
+        if (sc >= 0xd800 && sc <= 0xdbff) sEnd--;
+      }
+      msg.exact = live.slice(so, capped);
+      msg.prefix = live.slice(pStart, so);
+      msg.suffix = live.slice(capped, sEnd);
+      msg.startOffset = so;
+      msg.endOffset = capped;
+    }
+    port.postMessage(msg);
+  }
+
+  function clearSelection() {
+    if (selected) {
+      selected.classList.remove(SEL_CLASS);
+      selected = null;
+    }
+  }
+
+  // rAF-throttled cursor + hover-rect stream so the host can paint the
+  // inspector hover box (and knows the pointer is present) in comment mode.
+  var cursorPending = false;
+  var cursorX = -1;
+  var cursorY = -1;
+  function flushCursor() {
+    cursorPending = false;
+    if (!port) return;
+    var hover = null;
+    if (
+      hoverEl &&
+      hoverEl.nodeType === 1 &&
+      hoverEl !== document.body &&
+      hoverEl !== document.documentElement
+    ) {
+      var r = hoverEl.getBoundingClientRect();
+      if (r.width > 0 || r.height > 0) {
+        hover = { x: r.left, y: r.top, w: r.width, h: r.height };
+      }
+    }
+    port.postMessage({ type: "cursor", x: cursorX, y: cursorY, hover: hover });
+  }
+  function scheduleCursor() {
+    if (!cursorPending) {
+      cursorPending = true;
+      requestAnimationFrame(flushCursor);
+    }
+  }
+  function onMouseMove(ev) {
+    if (!mode || !port) return;
+    // Over the scrollbar gutter (clientX/Y past the content box) - hide
+    // the hover box like a leave.
+    var de = document.documentElement;
+    if (ev.clientX >= de.clientWidth || ev.clientY >= de.clientHeight) {
+      cursorX = -1;
+      cursorY = -1;
+      hoverEl = null;
+      scheduleCursor();
+      return;
+    }
+    cursorX = ev.clientX;
+    cursorY = ev.clientY;
+    hoverEl = ev.target;
+    scheduleCursor();
+  }
+  function onMouseLeave() {
+    if (!mode || !port) return;
+    cursorX = -1;
+    cursorY = -1;
+    hoverEl = null;
+    scheduleCursor();
+  }
+
+  function onClick(ev) {
+    if (!port) return;
+    if (!mode) {
+      // Mode off: don't intercept the page, just let the host close any
+      // open popover (thread card click-away). A non-collapsed selection
+      // means the click ended a drag-select - not a click-away.
+      var s = window.getSelection();
+      if (!s || s.isCollapsed) port.postMessage({ type: "clickAway" });
+      return;
+    }
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    var el = ev.target;
+    if (!el || el.nodeType !== 1 || el === document.documentElement) return;
+    if (el === document.body && el.firstElementChild) {
+      // Pin on body is rarely intentional; keep it anyway but as body.
+    }
+    clearSelection();
+    selected = el;
+    el.classList.add(SEL_CLASS);
+    var rect = el.getBoundingClientRect();
+    var pinX = rect.width > 0 ? (ev.clientX - rect.left) / rect.width : 0.5;
+    var pinY = rect.height > 0 ? (ev.clientY - rect.top) / rect.height : 0.5;
+    port.postMessage({
+      type: "capture",
+      selector: selectorFor(el).slice(0, 1000),
+      textHint: visibleText(el).slice(0, 300),
+      descriptor: descriptorFor(el),
+      pinX: Math.min(1, Math.max(0, pinX)),
+      pinY: Math.min(1, Math.max(0, pinY)),
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      rectLeft: rect.left,
+      rectTop: rect.top,
+    });
+  }
+
+  function reportRects() {
+    rafPending = false;
+    if (!port) return;
+    // Selected element's live bounds - keeps the host's draft pin /
+    // inspector tag / composer glued through scroll and reflow.
+    if (selected) {
+      var sr = selected.getBoundingClientRect();
+      port.postMessage({
+        type: "selRect",
+        left: sr.left,
+        top: sr.top,
+        w: sr.width,
+        h: sr.height,
+        found:
+          (sr.width > 0 || sr.height > 0) &&
+          document.documentElement.contains(selected),
+      });
+    }
+    var rects = [];
+    for (var i = 0; i < pins.length; i++) {
+      var p = pins[i];
+      var el = null;
+      try {
+        el = document.querySelector(p.selector);
+      } catch (e) {
+        el = null;
+      }
+      if (!el) {
+        rects.push({ id: p.id, x: 0, y: 0, found: false });
+        continue;
+      }
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) {
+        rects.push({ id: p.id, x: 0, y: 0, found: false });
+        continue;
+      }
+      rects.push({
+        id: p.id,
+        x: r.left + p.pinX * r.width,
+        y: r.top + p.pinY * r.height,
+        found: true,
+      });
+    }
+    var quoteRects = [];
+    if (quotes.length > 0) {
+      var live = null;
+      for (var qi = 0; qi < quotes.length; qi++) {
+        var q = quotes[qi];
+        var qr = quoteRanges[q.id];
+        if (qr === undefined) {
+          if (live === null) {
+            live = (document.body && document.body.textContent) || "";
+          }
+          var loc = locateQuote(live, q);
+          qr = (loc && rangeForOffsets(loc.start, loc.end)) || null;
+          quoteRanges[q.id] = qr;
+        }
+        // Zero paintable rects (display:none subtree) reports as
+        // not-found so the host docks it as detached instead of
+        // rendering nothing clickable.
+        var qlr = qr ? collectLineRects(qr, 80) : [];
+        quoteRects.push(
+          qlr.length > 0
+            ? { id: q.id, found: true, lineRects: qlr }
+            : { id: q.id, found: false, lineRects: [] }
+        );
+      }
+    }
+    port.postMessage({
+      type: "rects",
+      rects: rects,
+      quoteRects: quoteRects,
+      scrollY: window.scrollY || 0,
+    });
+  }
+
+  function scheduleRects() {
+    if (rafPending) return;
+    rafPending = true;
+    var done = false;
+    function run() {
+      if (done) return;
+      done = true;
+      reportRects();
+    }
+    // rAF for paint alignment, with a timeout fallback - rAF is
+    // suspended entirely in hidden tabs and pins must still settle
+    // when the tab becomes visible after background loading.
+    requestAnimationFrame(run);
+    setTimeout(run, 150);
+  }
+
+  function setMode(on) {
+    mode = !!on;
+    document.documentElement.toggleAttribute("data-cwhr-mode", mode);
+    if (!mode) {
+      hoverEl = null;
+      clearSelection();
+    }
+  }
+
+  function setComposing(open) {
+    document.documentElement.toggleAttribute("data-cwhr-composing", !!open);
+  }
+
+  function onPortMessage(ev) {
+    var data = ev.data;
+    if (!data) return;
+    if (data.type === "mode") setMode(data.on);
+    else if (data.type === "composing") setComposing(data.open);
+    else if (data.type === "pins") {
+      pins = Array.isArray(data.pins) ? data.pins : [];
+      scheduleRects();
+    } else if (data.type === "quotes") {
+      quotes = Array.isArray(data.quotes) ? data.quotes : [];
+      quoteRanges = Object.create(null);
+      scheduleRects();
+    } else if (data.type === "clearSelection") {
+      clearSelection();
+    } else if (data.type === "clearTextSel") {
+      var ts = window.getSelection();
+      if (ts) ts.removeAllRanges();
+      hasTextSel = false;
+    } else if (data.type === "restoreScroll") {
+      var ry = Number(data.y);
+      if (isFinite(ry) && ry > 0) {
+        // Apply now and again at load - late images/fonts can grow the
+        // document after the first attempt clamps short.
+        window.scrollTo(0, ry);
+        window.addEventListener("load", function () {
+          window.scrollTo(0, ry);
+        });
+      }
+    }
+  }
+
+  function start() {
+    injectStyle();
+    var channel = new _MessageChannel();
+    port = channel.port1;
+    port.onmessage = onPortMessage;
+    // Sandboxed srcdoc origins can be opaque; "*" is required. The
+    // payload carries only the mount token (multiple sandboxes can be
+    // mounted at once - the token routes the port to the right overlay)
+    // and the channel port itself is pairwise-secure.
+    _topPost(
+      { type: READY_TYPE, token: "92dc2d47-0b58-49bc-9a90-caadb3606cd4" },
+      "*",
+      [channel.port2]
+    );
+    document.addEventListener("mousemove", onMouseMove, true);
+    // documentElement (not document, capture) so this fires only when the
+    // pointer leaves the viewport - capture-phase on document would fire for
+    // every intra-document element-boundary crossing.
+    document.documentElement.addEventListener("mouseleave", onMouseLeave);
+    document.addEventListener("click", onClick, true);
+    // Text-selection capture: commit on mouseup/keyup (Shift+Arrow),
+    // clear on collapse. Not mode-gated; highlight-to-comment is
+    // always on.
+    function onSelCommit() { reportTextSel(true); }
+    document.addEventListener("mouseup", onSelCommit, true);
+    document.addEventListener("keyup", onSelCommit, true);
+    document.addEventListener("selectionchange", function () {
+      var s = window.getSelection();
+      if (hasTextSel && (!s || s.isCollapsed)) reportTextSel(false);
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && port) port.postMessage({ type: "dismiss" });
+    }, true);
+    // Scroll/resize move the hovered element under a stationary pointer -
+    // re-report its rect so the host's inspector box tracks it. Mutations
+    // stay rects-only (animating pages would chatter the cursor stream).
+    var textSelPending = false;
+    function scheduleTextSel() {
+      if (textSelPending) return;
+      textSelPending = true;
+      requestAnimationFrame(function () {
+        textSelPending = false;
+        reportTextSel(false);
+      });
+    }
+    function onLayoutChange() {
+      scheduleRects();
+      if (mode && hoverEl) scheduleCursor();
+      if (hasTextSel) scheduleTextSel();
+    }
+    window.addEventListener("scroll", onLayoutChange, true);
+    window.addEventListener("resize", onLayoutChange);
+    // Full-cache invalidate per childList mutation is acceptable: CSS
+    // animation doesn't fire the observer; JS writers at frame rate
+    // would re-relocate every frame but are rare. characterData isn't
+    // observed, so .data= edits leave highlights stale until the next
+    // childList mutation.
+    var observer = new MutationObserver(function () {
+      quoteRanges = Object.create(null);
+      scheduleRects();
+      if (hasTextSel) scheduleTextSel();
+    });
+    function observe() {
+      if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+    }
+    if (document.body) observe();
+    else document.addEventListener("DOMContentLoaded", observe);
+    // Settle pins after late layout (fonts, images).
+    setInterval(scheduleRects, 2000);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();
+</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Agriculture AI Assistant | Dashboard</title>
+<!-- Google Fonts: Inter & Noto Sans for Indian Languages -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=Noto+Sans+Devanagari:wght@400;600&amp;family=Noto+Sans+Kannada:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;family=Noto+Sans+Telugu:wght@400;600&amp;display=swap" rel="stylesheet">
+<!-- Chart.js for data visualization -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- Lucide Icons via CDN -->
+<script src="https://unpkg.com/lucide@latest"></script>
+
+<style>
+:root {
+  --primary: #10b981;
+  --primary-dark: #059669;
+  --primary-light: #d1fae5;
+  --primary-bg: #f0fdf4;
+  --accent: #15803d;
+  --bg-body: #f8fafc;
+  --bg-card: #ffffff;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --info: #0284c7;
+  --radius: 14px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.03);
+  --sidebar-width: 260px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', 'Noto Sans Devanagari', 'Noto Sans Tamil', 'Noto Sans Telugu', 'Noto Sans Kannada', sans-serif;
+}
+
+body {
+  background-color: var(--bg-body);
+  color: var(--text-main);
+  display: flex;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Sidebar Styling */
+aside.sidebar {
+  width: var(--sidebar-width);
+  background-color: #064e3b;
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  transition: transform 0.3s ease;
+  box-shadow: 4px 0 16px rgba(0,0,0,0.12);
+}
+
+.brand {
+  padding: 24px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.brand-icon {
+  background: var(--primary);
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #064e3b;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+}
+.brand h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.brand span {
+  font-size: 0.75rem;
+  color: #a7f3d0;
+  display: block;
+  font-weight: 400;
+}
+
+nav.nav-menu {
+  flex: 1;
+  padding: 16px 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  color: #d1fae5;
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+.nav-item:hover {
+  background: rgba(255,255,255,0.08);
+  color: #ffffff;
+  transform: translateX(4px);
+}
+.nav-item.active {
+  background: var(--primary);
+  color: #064e3b;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(16,185,129,0.3);
+}
+
+.sidebar-footer {
+  padding: 16px 20px 80px 20px; /* buffer for bottom-left floating download button */
+  border-top: 1px solid rgba(255,255,255,0.1);
+  font-size: 0.78rem;
+  color: #a7f3d0;
+}
+
+/* Main Content Wrapper */
+main.main-content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg-body);
+  transition: margin 0.3s ease;
+  padding-bottom: 80px;
+  min-width: 0;
+}
+
+/* Header Bar */
+header.topbar {
+  height: 72px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  box-shadow: var(--shadow-sm);
+}
+
+.mobile-menu-btn {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-main);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.topbar-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+.badge-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  background: #ecfdf5;
+  color: #047857;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-weight: 600;
+  border: 1px solid #a7f3d0;
+}
+.badge-status .dot {
+  width: 7px;
+  height: 7px;
+  background: #10b981;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #10b981;
+  animation: pulse 2s infinite;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lang-selector-wrap {
+  display: flex;
+  align-items: center;
+  background: #f1f5f9;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  gap: 8px;
+}
+.lang-select {
+  background: transparent;
+  border: none;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+  outline: none;
+}
+
+/* Page Content Sections */
+.content-area {
+  padding: 28px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-section {
+  display: none;
+  animation: fadeIn 0.25s ease-in-out;
+}
+.page-section.active {
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+/* Cards & Grids */
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  padding: 22px;
+  position: relative;
+  transition: all 0.2s ease;
+}
+.card:hover {
+  box-shadow: var(--shadow-md);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Sensor Metric Cards */
+.sensor-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+  overflow: hidden;
+}
+.sensor-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--primary);
+}
+.sensor-card.warning::before { background: var(--warning); }
+.sensor-card.critical::before { background: var(--danger); }
+
+.sensor-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.sensor-name {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.sensor-icon-box {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--primary-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sensor-value {
+  font-size: 1.85rem;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.1;
+}
+.sensor-unit {
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.sensor-footer {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.74rem;
+}
+.pill-optimal { background: #dcfce7; color: #15803d; }
+.pill-warning { background: #fef3c7; color: #b45309; }
+.pill-critical { background: #fee2e2; color: #b91c1c; }
+
+/* Interactive Simulation & Pump Banner */
+.banner-control {
+  background: linear-gradient(135deg, #064e3b 0%, #047857 100%);
+  color: #ffffff;
+  padding: 24px;
+  border-radius: var(--radius);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  box-shadow: var(--shadow-md);
+}
+.banner-text h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.banner-text p {
+  color: #a7f3d0;
+  font-size: 0.9rem;
+}
+.banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  text-decoration: none;
+}
+.btn-primary {
+  background: var(--primary);
+  color: #064e3b;
+}
+.btn-primary:hover {
+  background: #059669;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+.btn-outline-light {
+  background: rgba(255,255,255,0.12);
+  color: #ffffff;
+  border: 1px solid rgba(255,255,255,0.25);
+}
+.btn-outline-light:hover {
+  background: rgba(255,255,255,0.2);
+}
+.btn-secondary {
+  background: #f1f5f9;
+  color: #334155;
+}
+.btn-secondary:hover {
+  background: #e2e8f0;
+}
+.btn-danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+.btn-danger:hover {
+  background: #dc2626;
+}
+
+/* Switch toggle */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #cbd5e1;
+  transition: .3s;
+  border-radius: 34px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: var(--primary);
+}
+input:checked + .slider:before {
+  transform: translateX(22px);
+}
+
+/* GenAI Assistant Styles */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 620px;
+  background: #ffffff;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.chat-header {
+  padding: 16px 20px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.chat-messages {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: #fafaf9;
+}
+.chat-msg {
+  display: flex;
+  gap: 12px;
+  max-width: 82%;
+}
+.chat-msg.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+.chat-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.chat-msg.assistant .chat-avatar {
+  background: #10b981;
+  color: #064e3b;
+}
+.chat-msg.user .chat-avatar {
+  background: #0284c7;
+  color: #ffffff;
+}
+.chat-bubble {
+  padding: 14px 18px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.chat-msg.assistant .chat-bubble {
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+}
+.chat-msg.user .chat-bubble {
+  background: #064e3b;
+  color: #ffffff;
+}
+.chat-pills {
+  padding: 10px 20px;
+  background: #f8fafc;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.quick-pill {
+  font-size: 0.78rem;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.quick-pill:hover {
+  background: var(--primary-light);
+  color: var(--accent);
+  border-color: #a7f3d0;
+}
+.chat-input-area {
+  padding: 14px 20px;
+  background: #ffffff;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+}
+.chat-input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+  font-size: 0.92rem;
+  transition: border 0.2s;
+}
+.chat-input:focus {
+  border-color: var(--primary);
+}
+
+/* Table styles */
+.table-container {
+  overflow-x: auto;
+}
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.9rem;
+}
+table.data-table th {
+  padding: 12px 16px;
+  background: #f8fafc;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+table.data-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-main);
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 16px;
+}
+.form-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: #334155;
+}
+.form-control {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border 0.2s;
+}
+.form-control:focus {
+  border-color: var(--primary);
+}
+
+/* MANDATORY FIXED DOWNLOAD BUTTON: BOTTOM-LEFT CORNER */
+#download-dashboard-btn {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  z-index: 9999;
+  background: #064e3b;
+  color: #ffffff;
+  box-shadow: 0 10px 25px -5px rgba(6, 78, 59, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  border: 2px solid #10b981;
+  padding: 12px 20px;
+  border-radius: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 700;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#download-dashboard-btn:hover {
+  background: #047857;
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 14px 30px -4px rgba(6, 78, 59, 0.6);
+  border-color: #34d399;
+}
+#download-dashboard-btn:active {
+  transform: translateY(0);
+}
+
+/* Responsive Breakpoints */
+@media (max-width: 992px) {
+  aside.sidebar {
+    transform: translateX(-100%);
+  }
+  aside.sidebar.open {
+    transform: translateX(0);
+  }
+  main.main-content {
+    margin-left: 0;
+  }
+  .mobile-menu-btn {
+    display: block;
+  }
+  #download-dashboard-btn {
+    bottom: 16px;
+    left: 16px;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+  }
+}
+@media (max-width: 520px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .content-area { padding: 16px; }
+}
+</style>
+<style>.__cwhr-sel{outline:1px solid hsl(40 70% 40%) !important;outline-offset:0;}html[data-cwhr-mode]:not(#__cwhr_),html[data-cwhr-mode] :not(#__cwhr_){cursor:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'24'%20height%3D'24'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20d%3D'M12%20.5h0A11.5%2011.5%200%200%201%2023.5%2012v0A11.5%2011.5%200%200%201%2012%2023.5H2.5a2%202%200%200%201-2-2V12A11.5%2011.5%200%200%201%2012%20.5Z'%20fill%3D'%23fff'%20stroke%3D'rgba(0%2C0%2C0%2C0.22)'%20stroke-width%3D'1'%2F%3E%3C%2Fsvg%3E") 1 23, url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAACjklEQVR4AbRWS2gaURR9TGpiFTUEWpKQkA+EruqizWcRSBRT/G8KKpXiyo0ra1fVNiDFLmypFUo3iht/iO4Uay1FGwtFECl1p6KWLly4CGqrSMTY+wRFQ7WhGYd7Zu697845b+7M8B6BJh+UxcXFG3a7XeTxeHQAC+C12+1+ZLPZhHgMbp8FjLWxAkaj8U48Hg8lEomfIpEoLBaLLTKZTAd4LJFI3kD8HsZ+xGKxoMFgYI9T+JvAtUAg8FylUn3hcDj8ra0t6vLyMmKxWIhCofSAfZyDMRqXy+Wr1eqvPp/vKYjMAEZsRMDpdN6MRCKf+Xz+8cbGBm2kckIAtXShUGgKh8Mnfr9/Ybh0IKDT6a4vLS19EggE+wwGY7jmUj6TyUTQyv35+fmP0MbBexkISKVS+97e3u1LsU0oAo67Go3G1i/pCZjN5t3Nzc0H/zPzPlH/ip8EWvbQYrHs4hwWmN3e3n62traGfZy7MtbX12fYbPYTIKIQOzs7C6urq/cgINVWVlaO4EtjEXq9nken06mksgMZtJthtVp5xNzcHBsEIEWu0Wg0RKVS2USz2WTigFx6hPCkMTfRarXgB6WQzd/j63Q6bdK+nB7j0KnRaCCCIMpTE4D2oEql8m1qAvV6/VSr1U5PIJvN+qFjv6fyBIVC4ZfD4XgJAmekC9RqNZROp1+FQqESCCDSBWCVO1EoFC8wOQZpAnjm0Wj0O/xX94H4HNAzotvtNnreFU6lUgllMplAMpnclcvlp8NURC6Xi8BLGc5N9NvtNqpWq6hcLqN8Pn8OLUkAMe/g4EAOG4WzizcTJpPpA6zFIpfL9Ra2I45/IRgM2lKp1LtisXjs9XpvHR4eHimVythF4n78BwAA//8r8OPFAAAABklEQVQDAPCY8Oae0TJxAAAAAElFTkSuQmCC") 1 23, default !important;}html[data-cwhr-mode][data-cwhr-composing]:not(#__cwhr_),html[data-cwhr-mode][data-cwhr-composing] :not(#__cwhr_){cursor:default !important;}</style></head>
+<body id="artifacts-component-root-html">
+
+<!-- Floating Mandatory Download Button (Bottom-Left Corner) -->
+<button id="download-dashboard-btn" onclick="downloadSmartDashboard()" title="Download complete single-file dashboard">
+  <i data-lucide="download" style="width: 18px; height: 18px;"></i>
+  <span id="txt-download-btn">Download Dashboard (smart.html)</span>
+</button>
+
+<!-- Sidebar Navigation -->
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <div class="brand-icon">
+      <i data-lucide="sprout" style="width: 24px; height: 24px;"></i>
+    </div>
+    <div>
+      <h2>AgriSmart AI</h2>
+      <span id="txt-brand-subtitle">Precision Farming 4.0</span>
+    </div>
+  </div>
+
+  <nav class="nav-menu">
+    <button class="nav-item active" onclick="switchSection('overview')">
+      <i data-lucide="layout-dashboard"></i>
+      <span id="nav-overview">Overview</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('sensors')">
+      <i data-lucide="cpu"></i>
+      <span id="nav-sensors">IoT Sensors</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('analysis')">
+      <i data-lucide="brain"></i>
+      <span id="nav-analysis">AI Analysis</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('prediction')">
+      <i data-lucide="wheat"></i>
+      <span id="nav-prediction">Crop Prediction</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('irrigation')">
+      <i data-lucide="droplets"></i>
+      <span id="nav-irrigation">Irrigation Mgmt</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('alerts')">
+      <i data-lucide="bell"></i>
+      <span id="nav-alerts">Alerts &amp; Logs</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('assistant')">
+      <i data-lucide="bot"></i>
+      <span id="nav-assistant">GenAI Assistant</span>
+    </button>
+    <button class="nav-item" onclick="switchSection('settings')">
+      <i data-lucide="settings"></i>
+      <span id="nav-settings">Settings</span>
+    </button>
+  </nav>
+
+  <div class="sidebar-footer">
+    <p id="txt-iot-mode">⚡ Mode: Edge Simulated</p>
+    <small style="opacity: 0.7;">ESP32 MQTT Gateway Ready</small>
+  </div>
+</aside>
+
+<!-- Main Content Area -->
+<main class="main-content">
+
+  <!-- Topbar Header -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="mobile-menu-btn" onclick="toggleSidebar()" aria-label="Toggle Navigation">
+        <i data-lucide="menu"></i>
+      </button>
+      <h1 class="topbar-title" id="page-title">Overview Dashboard</h1>
+      <div class="badge-status">
+        <span class="dot"></span>
+        <span id="txt-system-live">Sensors Active</span>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <!-- Language Selector -->
+      <div class="lang-selector-wrap">
+        <i data-lucide="languages" style="width: 18px; height: 18px; color: #059669;"></i>
+        <select id="languageSelector" class="lang-select" onchange="changeLanguage(this.value)">
+          <option value="en">English</option>
+          <option value="ta">தமிழ் (Tamil)</option>
+          <option value="te">తెలుగు (Telugu)</option>
+          <option value="kn">ಕನ್ನಡ (Kannada)</option>
+          <option value="hi">हिन्दी (Hindi)</option>
+        </select>
+      </div>
+
+      <!-- Quick Simulation Pause/Resume -->
+      <button class="btn btn-secondary" onclick="toggleSimStream()" id="btn-stream-toggle" title="Pause or Resume Real-time Simulation">
+        <i data-lucide="refresh-cw" id="icon-stream"></i>
+        <span id="txt-stream-status">Live Stream ON</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="content-area">
+
+    <!-- ==================== SECTION 1: OVERVIEW ==================== -->
+    <section id="section-overview" class="page-section active">
+      <!-- Banner -->
+      <div class="banner-control">
+        <div class="banner-text">
+          <h3 id="txt-welcome-title">Smart Agro-Telemetry Hub</h3>
+          <p id="txt-welcome-desc">Real-time soil condition analysis, micro-climate insights, and automated irrigation management.</p>
+        </div>
+        <div class="banner-actions">
+          <button class="btn btn-primary" onclick="switchSection('prediction')">
+            <i data-lucide="sparkles"></i>
+            <span id="btn-quick-predict">Analyze Crops</span>
+          </button>
+          <button class="btn btn-outline-light" onclick="switchSection('irrigation')">
+            <i data-lucide="droplet"></i>
+            <span id="btn-quick-water">Irrigation Desk</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Primary Sensor Readings Grid -->
+      <div class="grid-4">
+        <div class="card sensor-card" id="card-moist">
+          <div class="sensor-top">
+            <span class="sensor-name" id="label-moisture">Soil Moisture</span>
+            <div class="sensor-icon-box"><i data-lucide="droplet"></i></div>
+          </div>
+          <div class="sensor-value"><span id="val-moisture">38.4</span><span class="sensor-unit">%</span></div>
+          <div class="sensor-footer">
+            <span class="pill pill-optimal" id="status-moisture">Optimal</span>
+            <span style="color:var(--text-muted); font-size:0.75rem;">Root zone (15cm)</span>
+          </div>
+        </div>
+
+        <div class="card sensor-card">
+          <div class="sensor-top">
+            <span class="sensor-name" id="label-temp">Air Temperature</span>
+            <div class="sensor-icon-box"><i data-lucide="thermometer"></i></div>
+          </div>
+          <div class="sensor-value"><span id="val-temp">28.2</span><span class="sensor-unit">°C</span></div>
+          <div class="sensor-footer">
+            <span class="pill pill-optimal" id="status-temp">Comfortable</span>
+            <span style="color:var(--text-muted); font-size:0.75rem;">Ambient Air</span>
+          </div>
+        </div>
+
+        <div class="card sensor-card">
+          <div class="sensor-top">
+            <span class="sensor-name" id="label-humidity">Relative Humidity</span>
+            <div class="sensor-icon-box"><i data-lucide="cloud"></i></div>
+          </div>
+          <div class="sensor-value"><span id="val-humidity">64.0</span><span class="sensor-unit">%</span></div>
+          <div class="sensor-footer">
+            <span class="pill pill-optimal" id="status-humidity">Normal</span>
+            <span style="color:var(--text-muted); font-size:0.75rem;">Canopy</span>
+          </div>
+        </div>
+
+        <div class="card sensor-card">
+          <div class="sensor-top">
+            <span class="sensor-name" id="label-ph">Soil pH Level</span>
+            <div class="sensor-icon-box"><i data-lucide="flask-conical"></i></div>
+          </div>
+          <div class="sensor-value"><span id="val-ph">6.52</span><span class="sensor-unit">pH</span></div>
+          <div class="sensor-footer">
+            <span class="pill pill-optimal" id="status-ph">Neutral Ideal</span>
+            <span style="color:var(--text-muted); font-size:0.75rem;">Probe #1</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts Grid -->
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="line-chart" style="color:var(--primary);"></i> <span id="txt-chart-moisture-title">Moisture &amp; Temperature Trend (Last 12h)</span></h3>
+          </div>
+          <div style="height: 260px;">
+            <canvas id="moistureChart"></canvas>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="pie-chart" style="color:var(--accent);"></i> <span id="txt-chart-npk-title">Soil Nutrient Balance (NPK mg/kg)</span></h3>
+          </div>
+          <div style="height: 260px;">
+            <canvas id="npkRadarChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Farm Quick Health & Irrigation Status -->
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="shield-check" style="color:#059669;"></i> <span id="txt-crop-rec-title">Current Suitability</span></h3>
+          </div>
+          <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 12px;" id="txt-crop-rec-desc">Based on real-time NPK and moisture metrics:</p>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#f0fdf4; padding:8px 12px; border-radius:8px;">
+              <b id="txt-crop-primary">Rice (Paddy)</b>
+              <span class="pill pill-optimal" id="txt-suit-high">94% Highly Suitable</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px 12px; border-radius:8px;">
+              <b id="txt-crop-second">Maize (Corn)</b>
+              <span class="pill pill-optimal" id="txt-suit-mod">86% Suitable</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="gauge" style="color:#0284c7;"></i> <span id="txt-quick-pump-title">Irrigation Pump Valve</span></h3>
+          </div>
+          <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 14px;" id="txt-quick-pump-desc">Auto-governor triggers if soil moisture drops below 30%.</p>
+          <div style="display:flex; align-items:center; justify-content:space-between; background:#f8fafc; padding:12px; border-radius:8px;">
+            <span style="font-weight:600;" id="txt-pump-label">Pump Relay #01</span>
+            <label class="switch">
+              <input type="checkbox" id="pumpToggleOverview" onchange="togglePumpState(this.checked)">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div style="margin-top:10px; font-size:0.8rem; color:var(--text-muted);" id="txt-pump-state-info">Status: Standby (Pressure Normal)</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="cloud-rain" style="color:#6366f1;"></i> <span id="txt-rain-title">Precipitation &amp; Rain</span></h3>
+          </div>
+          <div class="sensor-value" style="margin-top:4px;"><span id="val-rainfall">12.5</span><span class="sensor-unit">mm</span></div>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-top:8px;" id="txt-rain-forecast">Forecast: Light scattered showers predicted in afternoon. Irrigation deferral advised.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 2: IOT SENSORS ==================== -->
+    <section id="section-sensors" class="page-section">
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title" id="txt-sensors-headline">Telemetry &amp; Sensor Diagnostics</h3>
+            <p style="font-size: 0.85rem; color: var(--text-muted);" id="txt-sensors-sub">Live calibrated signals from agricultural IoT field probes.</p>
+          </div>
+          <span class="badge-status"><span class="dot"></span> 8 Probes Online</span>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th id="th-sensor">Sensor Parameter</th>
+                <th id="th-cur-val">Current Value</th>
+                <th id="th-ideal-range">Optimal Agronomic Range</th>
+                <th id="th-status">Health Status</th>
+                <th id="th-hardware">Interface</th>
+              </tr>
+            </thead>
+            <tbody id="sensor-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h4 class="card-title" style="margin-bottom:12px;" id="txt-manual-sim-title">Sensor Calibration / Manual Overrides</h4>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:14px;" id="txt-manual-sim-desc">Adjust variables to test crop models &amp; smart irrigation logic.</p>
+          <div class="form-group">
+            <label class="form-label" id="lbl-sim-moist">Soil Moisture Override (%)</label>
+            <input type="range" class="form-control" min="5" max="95" value="38" id="sliderMoist" oninput="overrideSensor('moisture', this.value)">
+            <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted);">
+              <span>5% (Dry)</span><span id="sliderMoistVal">38%</span><span>95% (Waterlogged)</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="lbl-sim-ph">pH Level Override</label>
+            <input type="range" class="form-control" min="40" max="90" value="65" id="sliderPh" oninput="overrideSensor('ph', (this.value/10).toFixed(1))">
+            <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted);">
+              <span>4.0 (Acidic)</span><span id="sliderPhVal">6.5 pH</span><span>9.0 (Alkaline)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h4 class="card-title" style="margin-bottom:12px;" id="txt-esp32-status-title">ESP32 Hardware Gateway Connection</h4>
+          <div style="background:#f8fafc; padding:14px; border-radius:10px; border:1px solid var(--border); font-size:0.85rem; line-height:1.7;">
+            <p><strong>Protocol:</strong> MQTT over WebSockets / REST</p>
+            <p><strong>Device ID:</strong> <code>ESP32-AGRI-STATION-TN04</code></p>
+            <p><strong>Telemetry Frequency:</strong> 2500ms</p>
+            <p><strong>ADC Resolution:</strong> 12-Bit (0-4095)</p>
+            <p><strong>Signal RSSI:</strong> -58 dBm (Strong)</p>
+            <div style="margin-top: 10px;">
+              <span class="pill pill-optimal" id="txt-gateway-ready">Gateway Connected &amp; Simulating</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 3: AI ANALYSIS ==================== -->
+    <section id="section-analysis" class="page-section">
+      <div class="banner-control" style="background: linear-gradient(135deg, #1e3a8a 0%, #0369a1 100%);">
+        <div class="banner-text">
+          <h3 id="txt-analysis-head">Neural Field Diagnostic &amp; Soil Health</h3>
+          <p id="txt-analysis-desc" style="color:#bae6fd;">Deep intelligence evaluating micro-elements, evapotranspiration rates, and stress indicators.</p>
+        </div>
+        <button class="btn btn-primary" onclick="runComprehensiveAnalysis()" id="btn-reanalyze">
+          <i data-lucide="refresh-ccw"></i> <span id="txt-btn-reanalyze">Run Deep Analysis</span>
+        </button>
+      </div>
+
+      <div class="grid-3">
+        <div class="card">
+          <h4 class="card-title"><i data-lucide="zap" style="color:var(--warning);"></i> <span id="txt-health-score-title">Field Health Index</span></h4>
+          <div style="text-align: center; margin: 24px 0;">
+            <span style="font-size: 3.5rem; font-weight: 800; color: #059669;" id="txt-health-score-val">88</span><span style="font-size:1.5rem; color:var(--text-muted)">/100</span>
+            <p style="color: #059669; font-weight:600;" id="txt-health-status">Excellent Growing Conditions</p>
+          </div>
+          <p style="font-size:0.85rem; color:var(--text-muted);" id="txt-health-summary">The field exhibits strong vegetative potential with adequate potassium retention and optimum aerobic respiration in topsoil layers.</p>
+        </div>
+
+        <div class="card">
+          <h4 class="card-title"><i data-lucide="shield-alert" style="color:#ef4444;"></i> <span id="txt-stress-title">Stress &amp; Risk Indicators</span></h4>
+          <ul style="list-style:none; display:flex; flex-direction:column; gap:10px; margin-top:14px; font-size:0.86rem;">
+            <li style="display:flex; justify-content:space-between; align-items:center;">
+              <span id="txt-risk-drought">Drought Water Stress:</span>
+              <span class="pill pill-optimal" id="val-risk-drought">Low (5%)</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; align-items:center;">
+              <span id="txt-risk-fungal">Fungal Infection Risk:</span>
+              <span class="pill pill-warning" id="val-risk-fungal">Moderate (32%)</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; align-items:center;">
+              <span id="txt-risk-nutrient">Nutrient Leaching Risk:</span>
+              <span class="pill pill-optimal" id="val-risk-nutrient">Minimal (11%)</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; align-items:center;">
+              <span id="txt-risk-salinity">Salinity / EC Stress:</span>
+              <span class="pill pill-optimal" id="val-risk-salinity">Optimal (0.8 dS/m)</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h4 class="card-title"><i data-lucide="lightbulb" style="color:#f59e0b;"></i> <span id="txt-agri-advisory-title">Agronomist Advisory</span></h4>
+          <div style="background:#fefce8; padding:12px; border-radius:8px; border:1px solid #fef08a; font-size:0.85rem; line-height:1.5; color:#713f12; margin-top:10px;" id="txt-advisory-content">
+            Nitrogen is currently moderate (84 mg/kg). For leafy canopy expansion during active tillering, apply 15kg/acre urea or organic vermicompost slurry prior to next irrigation cycle.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 4: CROP PREDICTION ==================== -->
+    <section id="section-prediction" class="page-section">
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title" id="txt-crop-pred-header">Multi-Factor Crop Suitability Recommendation Engine</h3>
+            <p style="font-size:0.85rem; color:var(--text-muted);" id="txt-crop-pred-sub">Evaluates N-P-K, soil pH, moisture, humidity, and rainfall against crop phenology matrices.</p>
+          </div>
+          <button class="btn btn-primary" onclick="predictCropsFromInputs()">
+            <i data-lucide="sparkles"></i> <span id="btn-run-prediction">Calculate Best Crops</span>
+          </button>
+        </div>
+
+        <!-- Parameter Input Simulation Bar -->
+        <div class="grid-4" style="background:#f8fafc; padding:16px; border-radius:10px; border:1px solid var(--border); margin-bottom:0;">
+          <div>
+            <label class="form-label">Nitrogen (N) mg/kg</label>
+            <input type="number" id="inputN" class="form-control" value="85">
+          </div>
+          <div>
+            <label class="form-label">Phosphorus (P) mg/kg</label>
+            <input type="number" id="inputP" class="form-control" value="45">
+          </div>
+          <div>
+            <label class="form-label">Potassium (K) mg/kg</label>
+            <input type="number" id="inputK" class="form-control" value="50">
+          </div>
+          <div>
+            <label class="form-label">Rainfall (mm)</label>
+            <input type="number" id="inputRain" class="form-control" value="120">
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-3" id="prediction-cards-container">
+        <!-- Populated by JavaScript -->
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 5: IRRIGATION MANAGEMENT ==================== -->
+    <section id="section-irrigation" class="page-section">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="power" style="color:var(--primary);"></i> <span id="txt-pump-control-title">Pump &amp; Solenoid Valve Control</span></h3>
+            <span class="pill pill-optimal" id="pumpBadgeState">Status: OFF</span>
+          </div>
+
+          <div style="background:#f8fafc; padding:18px; border-radius:12px; border:1px solid var(--border); margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <h4 style="font-size:1.05rem; font-weight:700;" id="txt-pump-main">Main Submersible Pump (5 HP)</h4>
+                <p style="font-size:0.82rem; color:var(--text-muted);" id="txt-pump-sub">Sector 1 Drip Lines &amp; Micro-Sprinklers</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="pumpMainToggle" onchange="togglePumpState(this.checked)">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+            <button class="btn btn-primary" onclick="setPumpTimer(15)">
+              <i data-lucide="timer"></i> <span id="btn-timer-15">+15 Mins Quick Water</span>
+            </button>
+            <button class="btn btn-secondary" onclick="setPumpTimer(30)">
+              <i data-lucide="timer"></i> <span id="btn-timer-30">+30 Mins Quick Water</span>
+            </button>
+            <button class="btn btn-danger" onclick="togglePumpState(false)">
+              <i data-lucide="octagon-x"></i> <span id="btn-stop-all">Stop Pump</span>
+            </button>
+          </div>
+
+          <div style="font-size:0.85rem; color:var(--text-muted); background:#eff6ff; padding:12px; border-radius:8px; border:1px solid #bfdbfe;">
+            <i data-lucide="info" style="width:16px; height:16px; vertical-align:middle; color:#2563eb;"></i>
+            <span id="txt-auto-irrig-logic">Smart Auto Mode: Pump automatically turns ON if soil moisture &lt; 28% and turns OFF at 55% moisture.</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="history" style="color:var(--accent);"></i> <span id="txt-irrig-log-title">Recent Irrigation Cycles</span></h3>
+          </div>
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th id="th-irrig-date">Time / Date</th>
+                  <th id="th-irrig-zone">Zone</th>
+                  <th id="th-irrig-duration">Duration</th>
+                  <th id="th-irrig-status">Result</th>
+                </tr>
+              </thead>
+              <tbody id="irrigation-logs-body">
+                <tr>
+                  <td>Today, 06:15 AM</td>
+                  <td>Sector A (Paddy)</td>
+                  <td>25 Mins</td>
+                  <td><span class="pill pill-optimal">Completed (420 L)</span></td>
+                </tr>
+                <tr>
+                  <td>Yesterday, 05:40 PM</td>
+                  <td>Sector B (Horticulture)</td>
+                  <td>15 Mins</td>
+                  <td><span class="pill pill-optimal">Completed (250 L)</span></td>
+                </tr>
+                <tr>
+                  <td>21 Oct, 06:00 AM</td>
+                  <td>Sector A (Paddy)</td>
+                  <td>30 Mins</td>
+                  <td><span class="pill pill-optimal">Completed (500 L)</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 6: ALERTS & NOTIFICATIONS ==================== -->
+    <section id="section-alerts" class="page-section">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title"><i data-lucide="bell" style="color:var(--warning);"></i> <span id="txt-alerts-header">System Events &amp; Agro-Alerts</span></h3>
+          <button class="btn btn-secondary" onclick="clearAlerts()"><i data-lucide="trash-2"></i> <span id="btn-clear-alerts">Clear All</span></button>
+        </div>
+        <div id="alerts-list-container" style="display:flex; flex-direction:column; gap:12px;">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 7: GENAI FARMER ASSISTANT ==================== -->
+    <section id="section-assistant" class="page-section">
+      <div class="chat-container">
+        <div class="chat-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="width:36px; height:36px; border-radius:50%; background:var(--primary); color:#064e3b; display:flex; align-items:center; justify-content:center;">
+              <i data-lucide="bot"></i>
+            </div>
+            <div>
+              <h4 style="font-size:0.95rem; font-weight:700;" id="txt-ai-assistant-name">Kisan AI Agricultural Consultant</h4>
+              <p style="font-size:0.75rem; color:var(--text-muted);" id="txt-ai-assistant-state">Context-Aware: Reading live soil &amp; weather sensors</p>
+            </div>
+          </div>
+          <span class="badge-status" id="badge-ai-mode"><span class="dot"></span> Farmer Model Ready</span>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg assistant">
+            <div class="chat-avatar"><i data-lucide="bot"></i></div>
+            <div class="chat-bubble" id="txt-initial-ai-msg">
+              Namaste! I am your Smart Farm AI Assistant. I have live telemetry of your soil moisture (38%), pH (6.5), and nutrients. How can I help your crops today?
+            </div>
+          </div>
+        </div>
+
+        <!-- Suggested quick questions (dynamically localized) -->
+        <div class="chat-pills" id="quickPillsContainer">
+          <!-- Populated by JS -->
+        </div>
+
+        <form class="chat-input-area" onsubmit="handleChatSubmit(event)">
+          <input type="text" id="chatInput" class="chat-input" placeholder="Ask about soil health, fertilizer dose, crop disease, irrigation..." autocomplete="off">
+          <button type="submit" class="btn btn-primary" id="btn-send-chat">
+            <i data-lucide="send"></i> <span id="txt-btn-send">Send</span>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ==================== SECTION 8: SETTINGS ==================== -->
+    <section id="section-settings" class="page-section">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="sliders" style="color:var(--primary);"></i> <span id="txt-settings-sys">System Configuration</span></h3>
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="lbl-farm-name">Farm / Land Title</label>
+            <input type="text" id="confFarmName" class="form-control" value="Green Meadows Agri Station 01">
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="lbl-irrigation-thresh">Automated Soil Moisture Trigger (%)</label>
+            <input type="number" id="confMoistThreshold" class="form-control" value="30">
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="lbl-mqtt-broker">ESP32 MQTT Broker URI</label>
+            <input type="text" id="confMqttUri" class="form-control" value="wss://broker.hivemq.com:8884/mqtt">
+          </div>
+          <button class="btn btn-primary" onclick="saveSystemSettings()" id="btn-save-settings">Save Preferences</button>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i data-lucide="key" style="color:var(--accent);"></i> <span id="txt-settings-ai">External AI Engine Setup (Optional)</span></h3>
+          </div>
+          <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:14px;" id="txt-api-key-expl">
+            To query external models (OpenAI/Gemini/Custom Proxy), input your secure proxy or token here. Keys stay purely in your local browser and are never exposed or transmitted externally. When empty, the built-in domain AI operates smoothly.
+          </p>
+          <div class="form-group">
+            <label class="form-label">AI Endpoint / Proxy URL</label>
+            <input type="text" id="confAiEndpoint" class="form-control" placeholder="https://api.openai.com/v1/chat/completions">
+          </div>
+          <div class="form-group">
+            <label class="form-label">API Key (Stored in LocalStorage only)</label>
+            <input type="password" id="confAiKey" class="form-control" placeholder="sk-...">
+          </div>
+          <button class="btn btn-secondary" onclick="saveAiSettings()" id="btn-save-ai">Update AI Provider</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- ==================== SCRIPT: COMPLETE DASHBOARD ENGINE ==================== -->
+<script>
+/* =========================================================
+   1. MULTILINGUAL TRANSLATION DICTIONARY (5 LANGUAGES)
+   ========================================================= */
+const translations = {
+  en: {
+    brandSubtitle: "Precision Farming 4.0",
+    navOverview: "Overview",
+    navSensors: "IoT Sensors",
+    navAnalysis: "AI Analysis",
+    navPrediction: "Crop Prediction",
+    navIrrigation: "Irrigation Mgmt",
+    navAlerts: "Alerts & Logs",
+    navAssistant: "GenAI Assistant",
+    navSettings: "Settings",
+    downloadBtn: "Download Dashboard (smart.html)",
+    liveStreamOn: "Live Stream ON",
+    liveStreamOff: "Stream PAUSED",
+    sensorsActive: "Sensors Active",
+    welcomeTitle: "Smart Agro-Telemetry Hub",
+    welcomeDesc: "Real-time soil condition analysis, micro-climate insights, and automated irrigation management.",
+    quickPredict: "Analyze Crops",
+    quickWater: "Irrigation Desk",
+    moisture: "Soil Moisture",
+    temperature: "Air Temperature",
+    humidity: "Relative Humidity",
+    phLevel: "Soil pH Level",
+    optimal: "Optimal",
+    normal: "Normal",
+    comfortable: "Comfortable",
+    neutralIdeal: "Neutral Ideal",
+    moistChartTitle: "Moisture & Temperature Trend (Last 12h)",
+    npkChartTitle: "Soil Nutrient Balance (NPK mg/kg)",
+    cropRecTitle: "Current Suitability",
+    cropRecDesc: "Based on real-time NPK and moisture metrics:",
+    pumpValveTitle: "Irrigation Pump Valve",
+    pumpValveDesc: "Auto-governor triggers if soil moisture drops below 30%.",
+    pumpRelay: "Pump Relay #01",
+    rainTitle: "Precipitation & Rain",
+    rainForecast: "Forecast: Light scattered showers predicted in afternoon. Irrigation deferral advised.",
+    sensorsHeadline: "Telemetry & Sensor Diagnostics",
+    sensorsSub: "Live calibrated signals from agricultural IoT field probes.",
+    thSensor: "Sensor Parameter",
+    thCurVal: "Current Value",
+    thIdealRange: "Optimal Range",
+    thStatus: "Health Status",
+    thInterface: "Interface",
+    manualSimTitle: "Sensor Calibration / Manual Overrides",
+    manualSimDesc: "Adjust variables to test crop models & smart irrigation logic.",
+    aiAnalysisHead: "Neural Field Diagnostic & Soil Health",
+    aiAnalysisDesc: "Deep intelligence evaluating micro-elements, evapotranspiration rates, and stress indicators.",
+    reanalyzeBtn: "Run Deep Analysis",
+    healthScoreTitle: "Field Health Index",
+    healthExcellent: "Excellent Growing Conditions",
+    healthSummary: "The field exhibits strong vegetative potential with adequate potassium retention and optimum aerobic respiration in topsoil layers.",
+    stressTitle: "Stress & Risk Indicators",
+    advisoryTitle: "Agronomist Advisory",
+    advisoryContent: "Nitrogen is currently moderate (84 mg/kg). For leafy canopy expansion during active tillering, apply 15kg/acre urea or organic vermicompost slurry prior to next irrigation cycle.",
+    cropPredHeader: "Multi-Factor Crop Suitability Recommendation Engine",
+    cropPredSub: "Evaluates N-P-K, soil pH, moisture, humidity, and rainfall against crop phenology matrices.",
+    calcBestCrops: "Calculate Best Crops",
+    pumpControlTitle: "Pump & Solenoid Valve Control",
+    pumpMain: "Main Submersible Pump (5 HP)",
+    pumpSub: "Sector 1 Drip Lines & Micro-Sprinklers",
+    quickWater15: "+15 Mins Quick Water",
+    quickWater30: "+30 Mins Quick Water",
+    stopPump: "Stop Pump",
+    autoIrrigLogic: "Smart Auto Mode: Pump automatically turns ON if soil moisture < 28% and turns OFF at 55% moisture.",
+    irrigLogTitle: "Recent Irrigation Cycles",
+    alertsHeader: "System Events & Agro-Alerts",
+    clearAll: "Clear All",
+    aiAssistantName: "Kisan AI Agricultural Consultant",
+    aiAssistantState: "Context-Aware: Reading live soil & weather sensors",
+    initialAiMsg: "Namaste! I am your Smart Farm AI Assistant. I have live telemetry of your soil moisture (38%), pH (6.5), and nutrients. How can I help your crops today?",
+    chatPlaceholder: "Ask about soil health, fertilizer dose, crop disease, irrigation...",
+    send: "Send",
+    settingsSys: "System Configuration",
+    settingsAi: "External AI Engine Setup (Optional)",
+    savePref: "Save Preferences",
+    quickQuestions: [
+      "Is current moisture adequate for Paddy?",
+      "How can I balance Nitrogen deficiency?",
+      "When should I irrigate next?",
+      "Suggest high-profit crops for this soil pH"
+    ]
+  },
+
+  ta: {
+    brandSubtitle: "துல்லிய விவசாயம் 4.0",
+    navOverview: "கண்ணோட்டம்",
+    navSensors: "IoT சென்சார்கள்",
+    navAnalysis: "AI பகுப்பாய்வு",
+    navPrediction: "பயிர் கணிப்பு",
+    navIrrigation: "நீர்ப்பாசன மேலாண்மை",
+    navAlerts: "எச்சரிக்கைகள்",
+    navAssistant: "விவசாய AI உதவியாளர்",
+    navSettings: "அமைப்புகள்",
+    downloadBtn: "டாஷ்போர்டைப் பதிவிறக்கு (smart.html)",
+    liveStreamOn: "நேரலை ஸ்ட்ரீம் இயங்குகிறது",
+    liveStreamOff: "ஸ்ட்ரீம் இடைநிறுத்தப்பட்டது",
+    sensorsActive: "சென்சார்கள் தயார்",
+    welcomeTitle: "ஸ்மார்ட் விவசாய கட்டுப்பாட்டு மையம்",
+    welcomeDesc: "மண் ஈரப்பதம், வானிலை நுண்ணறிவு மற்றும் தானியங்கி பாசன கண்காணிப்பு.",
+    quickPredict: "பயிர்களை ஆராய்க",
+    quickWater: "பாசன பகுதி",
+    moisture: "மண் ஈரப்பதம்",
+    temperature: "காற்று வெப்பநிலை",
+    humidity: "காற்று ஈரப்பதம்",
+    phLevel: "மண் pH அளவு",
+    optimal: "உகந்தது",
+    normal: "இயல்பானது",
+    comfortable: "ஏற்றது",
+    neutralIdeal: "சரியான நடுநிலை",
+    moistChartTitle: "ஈரப்பதம் & வெப்பநிலை போக்கு (கடந்த 12 மணி)",
+    npkChartTitle: "மண் சத்துக்கள் சமநிலை (NPK mg/kg)",
+    cropRecTitle: "தற்போதைய பயிர் பொருத்தம்",
+    cropRecDesc: "நேரலை NPK மற்றும் ஈரப்பத அளவீடுகளின் அடிப்படையில்:",
+    pumpValveTitle: "பாசன பம்ப் வால்வு",
+    pumpValveDesc: "மண் ஈரப்பதம் 30% க்கும் கீழே குறைந்தால் தானாகவே இயங்கும்.",
+    pumpRelay: "பம்ப் ரிலே #01",
+    rainTitle: "மழைப்பொழிவு",
+    rainForecast: "வானிலை: பிற்பகலில் லேசான மழை வாய்ப்பு. பாசனத்தை ஒத்திவைக்கவும்.",
+    sensorsHeadline: "சென்சார் அளவீடுகள் & பரிசோதனை",
+    sensorsSub: "விவசாய IoT கருவிகளிலிருந்து பெறப்படும் நேரலை சமிக்ஞைகள்.",
+    thSensor: "சென்சார் அளவுரு",
+    thCurVal: "தற்போதைய மதிப்பு",
+    thIdealRange: "சரியான வரம்பு",
+    thStatus: "நிலை",
+    thInterface: "இடைமுகம்",
+    manualSimTitle: "சென்சார் அளவுத்திருத்தம் / கைமுறை கட்டுப்பாடு",
+    manualSimDesc: "விவசாய மாதிரிகளை சோதிக்க அளவுகளை மாற்றவும்.",
+    aiAnalysisHead: "மண் வளம் மற்றும் நரம்பியல் பகுப்பாய்வு",
+    aiAnalysisDesc: "நுண் சத்துக்கள் மற்றும் பயிர் அழுத்தத்தை மதிப்பிடும் செயற்கை நுண்ணறிவு.",
+    reanalyzeBtn: "ஆழமான பகுப்பாய்வு செய்",
+    healthScoreTitle: "நில ஆரோக்கிய குறியீடு",
+    healthExcellent: "சிறந்த வளர்ச்சி நிலை",
+    healthSummary: "மண்ணில் பொட்டாசியம் தக்கவைப்பு மற்றும் காற்றோட்டம் சீராக உள்ளதால் பயிர்கள் செழிப்பாக வளரும்.",
+    stressTitle: "அபாய குறிகாட்டிகள்",
+    advisoryTitle: "விவசாய ஆலோசகர் குறிப்பு",
+    advisoryContent: "நைட்ரஜன் மிதமான அளவில் உள்ளது (84 mg/kg). நல்ல தழை வளர்ச்சிக்கு அடுத்த பாசனத்திற்கு முன் ஏக்கருக்கு 15 கிலோ யூரியா அல்லது மண்புழு உரம் இடவும்.",
+    cropPredHeader: "பயிர் பொருத்த கணிப்பு இயந்திரம்",
+    cropPredSub: "NPK, pH, ஈரப்பதம் மற்றும் மழையை அடிப்படையாகக் கொண்டு சிறந்த பயிர்களை கணிக்கும்.",
+    calcBestCrops: "பயிர்களைக் கணக்கிடு",
+    pumpControlTitle: "பம்ப் & மோட்டார் கட்டுப்பாடு",
+    pumpMain: "முக்கிய மோட்டார் பம்ப் (5 HP)",
+    pumpSub: "பகுதி 1 சொட்டு நீர் பாசனம்",
+    quickWater15: "+15 நிமிடம் பாசனம்",
+    quickWater30: "+30 நிமிடம் பாசனம்",
+    stopPump: "பம்பை நிறுத்து",
+    autoIrrigLogic: "தானியங்கி முறை: ஈரப்பதம் 28% குறைந்தால் பம்ப் ஆன் ஆகும், 55% எட்டினால் ஆஃப் ஆகும்.",
+    irrigLogTitle: "சமீபத்திய பாசன சுழற்சிகள்",
+    alertsHeader: "அறிவிப்புகள் மற்றும் நிகழ்வுகள்",
+    clearAll: "அனைத்தையும் நீக்கு",
+    aiAssistantName: "கிசான் AI விவசாய ஆலோசகர்",
+    aiAssistantState: "நேரலை சென்சார் விவரங்களுடன் இணைக்கப்பட்டுள்ளது",
+    initialAiMsg: "வணக்கம்! நான் உங்கள் விவசாய AI உதவியாளர். உங்கள் நிலத்தின் ஈரப்பதம் (38%) மற்றும் pH (6.5) அளவுகளை அறிந்துள்ளேன். உங்களுக்கு இன்று எவ்வாறு உதவட்டும்?",
+    chatPlaceholder: "மண் வளம், உரம், பயிர் நோய், பாசனம் பற்றி கேளுங்கள்...",
+    send: "அனுப்பு",
+    settingsSys: "கணினி அமைப்புகள்",
+    settingsAi: "வெளிப்புற AI இணைப்பு (விருப்பத்தேர்வு)",
+    savePref: "சேமிக்கவும்",
+    quickQuestions: [
+      "தற்போதைய ஈரப்பதம் நெல் பயிருக்கு போதுமானதா?",
+      "நைட்ரஜன் குறைபாட்டை எவ்வாறு சரிசெய்வது?",
+      "அடுத்த பாசனம் எப்போது செய்ய வேண்டும்?",
+      "இந்த pH அளவுக்கு ஏற்ற லாபகரமான பயிர்கள் எவை?"
+    ]
+  },
+
+  te: {
+    brandSubtitle: "ఖచ్చితమైన వ్యవసాయం 4.0",
+    navOverview: "అవలోకనం",
+    navSensors: "IoT సెన్సార్లు",
+    navAnalysis: "AI విశ్లేషణ",
+    navPrediction: "పంట అంచనా",
+    navIrrigation: "నీటిపారుదల నిర్వహణ",
+    navAlerts: "హెచ్చరికలు",
+    navAssistant: "రైతు AI సహాయకుడు",
+    navSettings: "సెట్టింగ్‌లు",
+    downloadBtn: "డాష్‌బోర్డ్ డౌన్‌లోడ్ చేయండి (smart.html)",
+    liveStreamOn: "లైవ్ స్ట్రీమ్ ఆన్‌లో ఉంది",
+    liveStreamOff: "స్ట్రీమ్ పాజ్ చేయబడింది",
+    sensorsActive: "సెన్సార్లు యాక్టివ్‌గా ఉన్నాయి",
+    welcomeTitle: "స్మార్ట్ వ్యవసాయ టెలిమెట్రీ కేంద్రం",
+    welcomeDesc: "నేల తేమ, వాతావరణ సమాచారం మరియు స్వయంచాలక నీటిపారుదల నిర్వహణ.",
+    quickPredict: "పంటలను విశ్లేషించండి",
+    quickWater: "నీటిపారుదల కేంద్రం",
+    moisture: "నేల తేమ",
+    temperature: "గాలి ఉష్ణోగ్రత",
+    humidity: "గాలి తేమ",
+    phLevel: "నేల pH స్థాయి",
+    optimal: "అనుకూలం",
+    normal: "సాధారణం",
+    comfortable: "సౌకర్యవంతం",
+    neutralIdeal: "సరైన న్యూట్రల్",
+    moistChartTitle: "తేమ & ఉష్ణోగ్రత సరళి (గత 12 గంటలు)",
+    npkChartTitle: "నేల పోషకాల సమతుల్యత (NPK mg/kg)",
+    cropRecTitle: "ప్రస్తుత పంట అనుకూలత",
+    cropRecDesc: "రియల్ టైమ్ NPK మరియు తేమ ఆధారంగా:",
+    pumpValveTitle: "నీటిపారుదల పంప్ వాల్వ్",
+    pumpValveDesc: "నేల తేమ 30% కంటే తగ్గితే స్వయంచాలకంగా ప్రారంభమవుతుంది.",
+    pumpRelay: "పంప్ రిలే #01",
+    rainTitle: "వర్షపాతం",
+    rainForecast: "వాతావరణం: మధ్యాహ్నం తేలికపాటి జల్లులు పడే అవకాశం ఉంది. నీటిపారుదల వాయిదా వేయండి.",
+    sensorsHeadline: "సెన్సార్ రీడింగ్‌లు & పరీక్ష",
+    sensorsSub: "వ్యవసాయ IoT ఫీల్డ్ ప్రోబ్‌ల నుండి లైవ్ సిగ్నల్స్.",
+    thSensor: "సెన్సార్ పరామితి",
+    thCurVal: "ప్రస్తుత విలువ",
+    thIdealRange: "ఆదర్శ పరిధి",
+    thStatus: "ఆరోగ్య స్థితి",
+    thInterface: "ఇంటర్‌ఫేస్",
+    manualSimTitle: "సెన్సార్ కాలిబ్రేషన్ / మాన్యువల్ నియంత్రణ",
+    manualSimDesc: "పంట మోడళ్లను పరీక్షించడానికి విలువలను మార్చండి.",
+    aiAnalysisHead: "నేల ఆరోగ్యం & AI విశ్లేషణ",
+    aiAnalysisDesc: "సూక్ష్మ పోషకాలు మరియు పంట ఒత్తిడిని విశ్లేషించే కృత్రిమ మేధ.",
+    reanalyzeBtn: "డీప్ అనాలిసిస్ చేయండి",
+    healthScoreTitle: "భూమి ఆరోగ్య సూచిక",
+    healthExcellent: "అద్భుతమైన పెరుగుదల పరిస్థితులు",
+    healthSummary: "నేలలో పొటాషియం నిల్వ మరియు గాలి ప్రసరణ బాగుండటం వలన పంటలు ఏపుగా పెరుగుతాయి.",
+    stressTitle: "ప్రమాద సూచికలు",
+    advisoryTitle: "వ్యవసాయ సలహా",
+    advisoryContent: "నత్రజని ప్రస్తుతం మధ్యస్థంగా ఉంది (84 mg/kg). పచ్చదనం మరియు పిలకలు బాగా రావడానికి ఎకరానికి 15 కిలోల యూరియా లేదా వర్మీకంపోస్ట్ వేయండి.",
+    cropPredHeader: "పంట అనుకూలత సిఫార్సు ఇంజిన్",
+    cropPredSub: "NPK, pH, తేమ మరియు వర్షపాతం ఆధారంగా ఉత్తమ పంటలను అంచనా వేస్తుంది.",
+    calcBestCrops: "ఉత్తమ పంటలను లెక్కించండి",
+    pumpControlTitle: "పంప్ & మోటార్ నియంత్రణ",
+    pumpMain: "ప్రధాన సబ్‌మెర్సిబుల్ పంప్ (5 HP)",
+    pumpSub: "సెక్టార్ 1 డ్రిప్ లైన్లు",
+    quickWater15: "+15 నిమిషాల నీరు",
+    quickWater30: "+30 నిమిషాల నీరు",
+    stopPump: "పంప్ ఆపండి",
+    autoIrrigLogic: "ఆటో మోడ్: తేమ 28% కంటే తగ్గితే పంప్ ఆన్ అవుతుంది, 55% వద్ద ఆఫ్ అవుతుంది.",
+    irrigLogTitle: "ఇటీవలి నీటిపారుదల చక్రాలు",
+    alertsHeader: "హెచ్చరికలు మరియు లాగ్‌లు",
+    clearAll: "అన్నీ క్లియర్ చేయండి",
+    aiAssistantName: "కిసాన్ AI వ్యవసాయ సలహాదారు",
+    aiAssistantState: "లైవ్ సెన్సార్లతో అనుసంధానించబడింది",
+    initialAiMsg: "నమస్కారం! నేను మీ స్మార్ట్ వ్యవసాయ AI సహాయకుడిని. మీ నేల తేమ (38%) మరియు pH (6.5) నాకు తెలుసు. ఈరోజు మీ పంటలకు నేను ఎలా సహాయపడగలను?",
+    chatPlaceholder: "నేల ఆరోగ్యం, ఎరువులు, పంట తెగుళ్లు, నీటిపారుదల గురించి అడగండి...",
+    send: "పంపండి",
+    settingsSys: "సిస్టమ్ సెట్టింగ్‌లు",
+    settingsAi: "బాహ్య AI కాన్ఫిగరేషన్ (ఐచ్ఛికం)",
+    savePref: "సేవ్ చేయండి",
+    quickQuestions: [
+      "వరి పంటకు ప్రస్తుత తేమ సరిపోతుందా?",
+      "నత్రజని లోపాన్ని ఎలా సరిదిద్దాలి?",
+      "తదుపరి నీటిపారుదల ఎప్పుడు ఇవ్వాలి?",
+      "ఈ pH విలువకు లాభదాయకమైన పంటలేవి?"
+    ]
+  },
+
+  kn: {
+    brandSubtitle: "ನಿಖರ ಕೃಷಿ 4.0",
+    navOverview: "ಅವಲೋಕನ",
+    navSensors: "IoT ಸಂವೇದಕಗಳು",
+    navAnalysis: "AI ವಿಶ್ಲೇಷಣೆ",
+    navPrediction: "ಬೆಳೆ ಭವಿಷ್ಯ",
+    navIrrigation: "ನೀರಾವರಿ ನಿರ್ವಹಣೆ",
+    navAlerts: "ಎಚ್ಚರಿಕೆಗಳು",
+    navAssistant: "ರೈತ AI ಸಹಾಯಕ",
+    navSettings: "ಸೆಟ್ಟಿಂಗ್‌ಗಳು",
+    downloadBtn: "ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ (smart.html)",
+    liveStreamOn: "ಲೈವ್ ಸ್ಟ್ರೀಮ್ ಚಾಲನೆಯಲ್ಲಿದೆ",
+    liveStreamOff: "ಸ್ಟ್ರೀಮ್ ವಿರಾಮಗೊಳಿಸಲಾಗಿದೆ",
+    sensorsActive: "ಸಂವೇದಕಗಳು ಸಕ್ರಿಯವಾಗಿವೆ",
+    welcomeTitle: "ಸ್ಮಾರ್ಟ್ ಕೃಷಿ ಟೆಲಿಮೆಟ್ರಿ ಕೇಂದ್ರ",
+    welcomeDesc: "ಮಣ್ಣಿನ ತೇವಾಂಶ, ಹವಾಮಾನ ಒಳನೋಟಗಳು ಮತ್ತು ಸ್ವಯಂಚಾಲಿತ ನೀರಾವರಿ ನಿರ್ವಹಣೆ.",
+    quickPredict: "ಬೆಳೆಗಳನ್ನು ವಿಶ್ಲೇಷಿಸಿ",
+    quickWater: "ನೀರಾವರಿ ವಿಭಾಗ",
+    moisture: "ಮಣ್ಣಿನ ತೇವಾಂಶ",
+    temperature: "ಗಾಳಿಯ ತಾಪಮಾನ",
+    humidity: "ಗಾಳಿಯ ತೇವಾಂಶ",
+    phLevel: "ಮಣ್ಣಿನ pH ಮಟ್ಟ",
+    optimal: "ಸೂಕ್ತವಾಗಿದೆ",
+    normal: "ಸಾಮಾನ್ಯ",
+    comfortable: "ಆರಾಮದಾಯಕ",
+    neutralIdeal: "ಸೂಕ್ತ ತಟಸ್ಥ",
+    moistChartTitle: "ತೇವಾಂಶ ಮತ್ತು ತಾಪಮಾನ ಪ್ರವೃತ್ತಿ (ಕಳೆದ 12 ಗಂಟೆ)",
+    npkChartTitle: "ಮಣ್ಣಿನ ಪೋಷಕಾಂಶಗಳ ಸಮತೋಲನ (NPK mg/kg)",
+    cropRecTitle: "ಪ್ರಸ್ತುತ ಬೆಳೆ ಸೂಕ್ತತೆ",
+    cropRecDesc: "ನೈಜ ಸಮಯದ NPK ಮತ್ತು ತೇವಾಂಶದ ಆಧಾರದ ಮೇಲೆ:",
+    pumpValveTitle: "ನೀರಾವರಿ ಪಂಪ್ ವಾಲ್ವ್",
+    pumpValveDesc: "ಮಣ್ಣಿನ ತೇವಾಂಶ 30% ಕ್ಕಿಂತ ಕಡಿಮೆಯಾದರೆ ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಆನ್ ಆಗುತ್ತದೆ.",
+    pumpRelay: "ಪಂಪ್ ರಿಲೇ #01",
+    rainTitle: "ಮಳೆ ಪ್ರಮಾಣ",
+    rainForecast: "ಮುನ್ಸೂಚನೆ: ಮಧ್ಯಾಹ್ನ ಸಾಧಾರಣ ಮಳೆಯಾಗುವ ಸಾಧ್ಯತೆಯಿದೆ. ನೀರಾವರಿಯನ್ನು ಮುಂದೂಡಿ.",
+    sensorsHeadline: "ಸಂವೇದಕ ಮಾಪನಗಳು ಮತ್ತು ರೋಗನಿರ್ಣಯ",
+    sensorsSub: "ಕೃಷಿ IoT ಸಾಧನಗಳಿಂದ ನೇರ ಸಂಕೇತಗಳು.",
+    thSensor: "ಸಂವೇದಕ ನಿಯತಾಂಕ",
+    thCurVal: "ಪ್ರಸ್ತುತ ಮೌಲ್ಯ",
+    thIdealRange: "ಸೂಕ್ತ ವ್ಯಾಪ್ತಿ",
+    thStatus: "ಸ್ಥಿತಿ",
+    thInterface: "ಇಂಟರ್ಫೇಸ್",
+    manualSimTitle: "ಸಂವೇದಕ ಮಾಪನಾಂಕ ನಿರ್ಣಯ / ಹಸ್ತಚಾಲಿತ ನಿಯಂತ್ರಣ",
+    manualSimDesc: "ಬೆಳೆ ಮಾದರಿಗಳನ್ನು ಪರೀಕ್ಷಿಸಲು ಮೌಲ್ಯಗಳನ್ನು ಬದಲಾಯಿಸಿ.",
+    aiAnalysisHead: "ಮಣ್ಣಿನ ಆರೋಗ್ಯ ಮತ್ತು AI ವಿಶ್ಲೇಷಣೆ",
+    aiAnalysisDesc: "ಸೂಕ್ಷ್ಮ ಪೋಷಕಾಂಶಗಳು ಮತ್ತು ಬೆಳೆ ಒತ್ತಡವನ್ನು ಪರೀಕ್ಷಿಸುವ ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆ.",
+    reanalyzeBtn: "ಆಳವಾದ ವಿಶ್ಲೇಷಣೆ ನಡೆಸಿ",
+    healthScoreTitle: "ಭೂಮಿ ಆರೋಗ್ಯ ಸೂಚ್ಯಂಕ",
+    healthExcellent: "ಉತ್ತಮ ಬೆಳವಣಿಗೆಯ ಪರಿಸ್ಥಿತಿ",
+    healthSummary: "ಮಣ್ಣಿನಲ್ಲಿ ಪೊಟ್ಯಾಸಿಯಮ್ ಧಾರಣ ಮತ್ತು ಗಾಳಿಯಾಡುವಿಕೆ ಉತ್ತಮವಾಗಿದ್ದು ಬೆಳೆಗಳು ಸಮೃದ್ಧವಾಗಿ ಬೆಳೆಯುತ್ತವೆ.",
+    stressTitle: "ಅಪಾಯದ ಸೂಚಕಗಳು",
+    advisoryTitle: "ಕೃಷಿ ತಜ್ಞರ ಸಲಹೆ",
+    advisoryContent: "ಸಾರಜನಕ ಪ್ರಸ್ತುತ ಮಧ್ಯಮ ಮಟ್ಟದಲ್ಲಿದೆ (84 mg/kg). ಉತ್ತಮ ಬೆಳವಣಿಗೆಗೆ ಮುಂದಿನ ನೀರಾವರಿಗೆ ಮುನ್ನ ಎಕರೆಗೆ 15 ಕೆಜಿ ಯೂರಿಯಾ ಅಥವಾ ಎರೆಹುಳು ಗೊಬ್ಬರ ಹಾಕಿ.",
+    cropPredHeader: "ಬೆಳೆ ಸೂಕ್ತತೆಯ ಶಿಫಾರಸು ಎಂಜಿನ್",
+    cropPredSub: "NPK, pH, ತೇವಾಂಶ ಮತ್ತು ಮಳೆಯ ಆಧಾರದ ಮೇಲೆ ಅತ್ಯುತ್ತಮ ಬೆಳೆಗಳನ್ನು ಊಹಿಸುತ್ತದೆ.",
+    calcBestCrops: "ಉತ್ತಮ ಬೆಳೆಗಳನ್ನು ಲೆಕ್ಕಹಾಕಿ",
+    pumpControlTitle: "ಪಂಪ್ ಮತ್ತು ಮೋಟಾರ್ ನಿಯಂತ್ರಣ",
+    pumpMain: "ಮುಖ್ಯ ಸಬ್‌ಮರ್ಸಿಬಲ್ ಪಂಪ್ (5 HP)",
+    pumpSub: "ಸೆಕ್ಟರ್ 1 ಹನಿ ನೀರಾವರಿ",
+    quickWater15: "+15 ನಿಮಿಷ ನೀರು",
+    quickWater30: "+30 ನಿಮಿಷ ನೀರು",
+    stopPump: "ಪಂಪ್ ನಿಲ್ಲಿಸಿ",
+    autoIrrigLogic: "ಸ್ವಯಂ ಮೋಡ್: ತೇವಾಂಶ 28% ಕ್ಕಿಂತ ಕಡಿಮೆಯಾದಾಗ ಪಂಪ್ ಆನ್ ಆಗುತ್ತದೆ, 55% ತಲುಪಿದಾಗ ಆಫ್ ಆಗುತ್ತದೆ.",
+    irrigLogTitle: "ಇತ್ತೀಚಿನ ನೀರಾವರಿ ಚಕ್ರಗಳು",
+    alertsHeader: "ಎಚ್ಚರಿಕೆಗಳು ಮತ್ತು ಘಟನೆಗಳು",
+    clearAll: "ಎಲ್ಲವನ್ನೂ ತೆರವುಗೊಳಿಸಿ",
+    aiAssistantName: "ಕಿಸಾನ್ AI ಕೃಷಿ ಸಲಹೆಗಾರ",
+    aiAssistantState: "ಲೈವ್ ಸಂವೇದಕಗಳೊಂದಿಗೆ ಸಂಪರ್ಕ ಹೊಂದಿದೆ",
+    initialAiMsg: "ನಮಸ್ಕಾರ! ನಾನು ನಿಮ್ಮ ಸ್ಮಾರ್ಟ್ ಕೃಷಿ AI ಸಹಾಯಕ. ನಿಮ್ಮ ಮಣ್ಣಿನ ತೇವಾಂಶ (38%) ಮತ್ತು pH (6.5) ಮಾಹಿತಿ ನನಗಿದೆ. ಇಂದು ನಿಮ್ಮ ಬೆಳೆಗಳಿಗೆ ನಾನು ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
+    chatPlaceholder: "ಮಣ್ಣಿನ ಆರೋಗ್ಯ, ಗೊಬ್ಬರ, ಬೆಳೆ ರೋಗ, ನೀರಾವರಿ ಬಗ್ಗೆ ಕೇಳಿ...",
+    send: "ಕಳುಹಿಸಿ",
+    settingsSys: "ವ್ಯವಸ್ಥೆಯ ಸಂರಚನೆ",
+    settingsAi: "ಬಾಹ್ಯ AI ಕಾನ್ಫಿಗರೇಶನ್ (ಐಚ್ಛಿಕ)",
+    savePref: "ಉಳಿಸಿ",
+    quickQuestions: [
+      "ಭತ್ತದ ಬೆಳೆಗೆ ಪ್ರಸ್ತುತ ತೇವಾಂಶ ಸಾಕಾಗಿದೆಯೇ?",
+      "ಸಾರಜನಕ ಕೊರತೆಯನ್ನು ಹೇಗೆ ನೀಗಿಸುವುದು?",
+      "ಮುಂದಿನ ನೀರಾವರಿ ಯಾವಾಗ ಮಾಡಬೇಕು?",
+      "ಈ pH ಮಟ್ಟಕ್ಕೆ ಲಾಭದಾಯಕ ಬೆಳೆಗಳು ಯಾವುವು?"
+    ]
+  },
+
+  hi: {
+    brandSubtitle: "सटीक कृषि 4.0",
+    navOverview: "अवलोकन",
+    navSensors: "IoT सेंसर",
+    navAnalysis: "AI विश्लेषण",
+    navPrediction: "फसल भविष्यवाणी",
+    navIrrigation: "सिंचाई प्रबंधन",
+    navAlerts: "अलर्ट और लॉग",
+    navAssistant: "किसान AI सहायक",
+    navSettings: "सेटिंग्स",
+    downloadBtn: "डैशबोर्ड डाउनलोड करें (smart.html)",
+    liveStreamOn: "लाइव स्ट्रीम चालू है",
+    liveStreamOff: "स्ट्रीम रुकी हुई है",
+    sensorsActive: "सेंसर सक्रिय हैं",
+    welcomeTitle: "स्मार्ट कृषि टेलीमेट्री हब",
+    welcomeDesc: "मृदा नमी, मौसम संबंधी अंतर्दृष्टि और स्वचालित सिंचाई प्रबंधन का वास्तविक समय विश्लेषण।",
+    quickPredict: "फसलों का विश्लेषण करें",
+    quickWater: "सिंचाई डेस्क",
+    moisture: "मृदा नमी",
+    temperature: "हवा का तापमान",
+    humidity: "सापेक्ष आर्द्रता",
+    phLevel: "मिट्टी का pH स्तर",
+    optimal: "उत्तम",
+    normal: "सामान्य",
+    comfortable: "अनुकूल",
+    neutralIdeal: "आदर्श तटस्थ",
+    moistChartTitle: "नमी और तापमान का रुझान (पिछले 12 घंटे)",
+    npkChartTitle: "मृदा पोषक तत्व संतुलन (NPK mg/kg)",
+    cropRecTitle: "वर्तमान फसल उपयुक्तता",
+    cropRecDesc: "वास्तविक समय के NPK और नमी के आधार पर:",
+    pumpValveTitle: "सिंचाई पंप वाल्व",
+    pumpValveDesc: "मिट्टी की नमी 30% से कम होने पर स्वचालित रूप से शुरू होता है।",
+    pumpRelay: "पंप रिले #01",
+    rainTitle: "वर्षा की स्थिति",
+    rainForecast: "पूर्वानुमान: दोपहर में हल्की बारिश की संभावना है। सिंचाई स्थगित रखने की सलाह।",
+    sensorsHeadline: "टेलीमेट्री और सेंसर निदान",
+    sensorsSub: "कृषि IoT फील्ड प्रोब से प्राप्त लाइव सिग्नल।",
+    thSensor: "सेंसर पैरामीटर",
+    thCurVal: "वर्तमान मान",
+    thIdealRange: "आदर्श सीमा",
+    thStatus: "स्वास्थ्य स्थिति",
+    thInterface: "इंटरफ़ेस",
+    manualSimTitle: "सेंसर अंशांकन / मैनुअल नियंत्रण",
+    manualSimDesc: "फसल मॉडल और स्मार्ट सिंचाई तर्क का परीक्षण करने के लिए मान बदलें।",
+    aiAnalysisHead: "मृदा स्वास्थ्य और AI फील्ड विश्लेषण",
+    aiAnalysisDesc: "सूक्ष्म पोषक तत्वों और फसल तनाव का मूल्यांकन करने वाला गहन तंत्रिका नेटवर्क।",
+    reanalyzeBtn: "गहन विश्लेषण चलाएं",
+    healthScoreTitle: "खेत स्वास्थ्य सूचकांक",
+    healthExcellent: "उत्कृष्ट विकास स्थिति",
+    healthSummary: "खेत में पोटाश प्रतिधारण और वातन संतुलित है, जिससे पौधों का मजबूत वानस्पतिक विकास संभव है।",
+    stressTitle: "तनाव और जोखिम संकेतक",
+    advisoryTitle: "कृषि वैज्ञानिक सलाह",
+    advisoryContent: "वर्तमान में नाइट्रोजन मध्यम स्तर (84 mg/kg) पर है। अच्छी बढ़वार और कल्ले फूटने के लिए अगली सिंचाई से पहले 15 किग्रा/एकड़ यूरिया या केंचुआ खाद डालें।",
+    cropPredHeader: "बहु-कारक फसल उपयुक्तता अनुशंसा इंजन",
+    cropPredSub: "NPK, pH, नमी और वर्षा के आधार पर सर्वोत्तम फसलों की भविष्यवाणी करता है।",
+    calcBestCrops: "सर्वोत्तम फसलों की गणना करें",
+    pumpControlTitle: "पंप और मोटर नियंत्रण",
+    pumpMain: "मुख्य सबमर्सिबल पंप (5 HP)",
+    pumpSub: "सेक्टर 1 ड्रिप लाइन्स",
+    quickWater15: "+15 मिनट त्वरित सिंचाई",
+    quickWater30: "+30 मिनट त्वरित सिंचाई",
+    stopPump: "पंप बंद करें",
+    autoIrrigLogic: "स्मार्ट ऑटो मोड: नमी 28% से कम होने पर पंप चालू होता है, 55% पर अपने आप बंद हो जाता है।",
+    irrigLogTitle: "हालिया सिंचाई चक्र",
+    alertsHeader: "सिस्टम अलर्ट और लॉग",
+    clearAll: "सभी साफ़ करें",
+    aiAssistantName: "किसान AI कृषि सलाहकार",
+    aiAssistantState: "लाइव सेंसर डेटा से जुड़ा हुआ है",
+    initialAiMsg: "नमस्ते! मैं आपका स्मार्ट फार्म AI सहायक हूँ। मुझे आपके खेत की नमी (38%) और pH (6.5) का सटीक ज्ञान है। आज मैं आपकी फसलों की क्या मदद कर सकता हूँ?",
+    chatPlaceholder: "मिट्टी की सेहत, खाद की मात्रा, फसल रोग, सिंचाई के बारे में पूछें...",
+    send: "भेजें",
+    settingsSys: "सिस्टम कॉन्फ़िगरेशन",
+    settingsAi: "बाहरी AI इंजन सेटअप (वैकल्पिक)",
+    savePref: "प्राथमिकताएं सहेजें",
+    quickQuestions: [
+      "क्या वर्तमान नमी धान की फसल के लिए पर्याप्त है?",
+      "नाइट्रोजन की कमी को कैसे संतुलित करें?",
+      "अगली सिंचाई कब करनी चाहिए?",
+      "इस pH मान के लिए सबसे लाभदायक फसलें कौन सी हैं?"
+    ]
+  }
+};
+
+/* =========================================================
+   2. GLOBAL STATE & SENSOR REGISTRY
+   ========================================================= */
+const state = {
+  lang: localStorage.getItem('agri_lang') || 'en',
+  streaming: true,
+  pumpActive: false,
+  pumpTimerId: null,
+  sensors: {
+    moisture: 38.4,
+    temperature: 28.2,
+    humidity: 64.0,
+    ph: 6.52,
+    nitrogen: 84,
+    phosphorus: 44,
+    potassium: 52,
+    rainfall: 12.5
+  },
+  moistureHistory: [35, 36, 36, 37, 37, 38, 38.4],
+  tempHistory: [25, 26, 27, 28, 29, 28.5, 28.2],
+  labelsHistory: ['00:00', '02:00', '04:00', '06:00', '08:00', '10:00', 'Now'],
+  alerts: [
+    { id: 1, type: 'info', text: 'System initialized. Edge sensor telemetry stable.', time: '10 mins ago' },
+    { id: 2, type: 'warning', text: 'Nitrogen level slightly below optimal for Rice booting phase.', time: '35 mins ago' }
+  ]
+};
+
+let moistureChartInstance = null;
+let npkRadarChartInstance = null;
+let streamInterval = null;
+
+/* =========================================================
+   3. TRANSLATION ENGINE & LANGUAGE SWITCHER
+   ========================================================= */
+function t(key) {
+  const dict = translations[state.lang] || translations.en;
+  return dict[key] !== undefined ? dict[key] : (translations.en[key] || key);
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function changeLanguage(langKey) {
+  state.lang = langKey;
+  localStorage.setItem('agri_lang', langKey);
+  document.getElementById('languageSelector').value = langKey;
+  applyTranslations();
+  renderSensorTable();
+  renderAlertsList();
+  renderQuickPills();
+  predictCropsFromInputs();
+  updateChartLanguage();
+}
+
+function applyTranslations() {
+  // Navigation
+  setText('txt-brand-subtitle', t('brandSubtitle'));
+  setText('nav-overview', t('navOverview'));
+  setText('nav-sensors', t('navSensors'));
+  setText('nav-analysis', t('navAnalysis'));
+  setText('nav-prediction', t('navPrediction'));
+  setText('nav-irrigation', t('navIrrigation'));
+  setText('nav-alerts', t('navAlerts'));
+  setText('nav-assistant', t('navAssistant'));
+  setText('nav-settings', t('navSettings'));
+
+  // Floating download button label
+  setText('txt-download-btn', t('downloadBtn'));
+
+  // Topbar status
+  setText('txt-system-live', t('sensorsActive'));
+  setText('txt-stream-status', state.streaming ? t('liveStreamOn') : t('liveStreamOff'));
+
+  // Overview Banner & Cards
+  setText('txt-welcome-title', t('welcomeTitle'));
+  setText('txt-welcome-desc', t('welcomeDesc'));
+  setText('btn-quick-predict', t('quickPredict'));
+  setText('btn-quick-water', t('quickWater'));
+
+  // Sensor labels
+  setText('label-moisture', t('moisture'));
+  setText('label-temp', t('temperature'));
+  setText('label-humidity', t('humidity'));
+  setText('label-ph', t('phLevel'));
+
+  // Chart titles
+  setText('txt-chart-moisture-title', t('moistChartTitle'));
+  setText('txt-chart-npk-title', t('npkChartTitle'));
+
+  // Status pills
+  setText('status-moisture', t('optimal'));
+  setText('status-temp', t('comfortable'));
+  setText('status-humidity', t('normal'));
+  setText('status-ph', t('neutralIdeal'));
+
+  // Overview Crop & Pump
+  setText('txt-crop-rec-title', t('cropRecTitle'));
+  setText('txt-crop-rec-desc', t('cropRecDesc'));
+  setText('txt-quick-pump-title', t('pumpValveTitle'));
+  setText('txt-quick-pump-desc', t('pumpValveDesc'));
+  setText('txt-pump-label', t('pumpRelay'));
+  setText('txt-rain-title', t('rainTitle'));
+  setText('txt-rain-forecast', t('rainForecast'));
+
+  // Sensors Tab
+  setText('txt-sensors-headline', t('sensorsHeadline'));
+  setText('txt-sensors-sub', t('sensorsSub'));
+  setText('th-sensor', t('thSensor'));
+  setText('th-cur-val', t('thCurVal'));
+  setText('th-ideal-range', t('thIdealRange'));
+  setText('th-status', t('thStatus'));
+  setText('th-hardware', t('thInterface'));
+  setText('txt-manual-sim-title', t('manualSimTitle'));
+  setText('txt-manual-sim-desc', t('manualSimDesc'));
+
+  // AI Analysis
+  setText('txt-analysis-head', t('aiAnalysisHead'));
+  setText('txt-analysis-desc', t('aiAnalysisDesc'));
+  setText('txt-btn-reanalyze', t('reanalyzeBtn'));
+  setText('txt-health-score-title', t('healthScoreTitle'));
+  setText('txt-health-status', t('healthExcellent'));
+  setText('txt-health-summary', t('healthSummary'));
+  setText('txt-stress-title', t('stressTitle'));
+  setText('txt-agri-advisory-title', t('advisoryTitle'));
+  setText('txt-advisory-content', t('advisoryContent'));
+
+  // Crop Prediction Tab
+  setText('txt-crop-pred-header', t('cropPredHeader'));
+  setText('txt-crop-pred-sub', t('cropPredSub'));
+  setText('btn-run-prediction', t('calcBestCrops'));
+
+  // Irrigation Tab
+  setText('txt-pump-control-title', t('pumpControlTitle'));
+  setText('txt-pump-main', t('pumpMain'));
+  setText('txt-pump-sub', t('pumpSub'));
+  setText('btn-timer-15', t('quickWater15'));
+  setText('btn-timer-30', t('quickWater30'));
+  setText('btn-stop-all', t('stopPump'));
+  setText('txt-auto-irrig-logic', t('autoIrrigLogic'));
+  setText('txt-irrig-log-title', t('irrigLogTitle'));
+
+  // Alerts Tab
+  setText('txt-alerts-header', t('alertsHeader'));
+  setText('btn-clear-alerts', t('clearAll'));
+
+  // Assistant Tab
+  setText('txt-ai-assistant-name', t('aiAssistantName'));
+  setText('txt-ai-assistant-state', t('aiAssistantState'));
+  setText('txt-initial-ai-msg', t('initialAiMsg'));
+  document.getElementById('chatInput').placeholder = t('chatPlaceholder');
+  setText('txt-btn-send', t('send'));
+
+  // Settings Tab
+  setText('txt-settings-sys', t('settingsSys'));
+  setText('txt-settings-ai', t('settingsAi'));
+  setText('btn-save-settings', t('savePref'));
+
+  // Refresh the current page title
+  const active = document.querySelector('.page-section.active');
+  if (active) {
+    const id = active.id.replace('section-', '');
+    const map = {
+      overview: 'navOverview', sensors: 'navSensors', analysis: 'navAnalysis',
+      prediction: 'navPrediction', irrigation: 'navIrrigation', alerts: 'navAlerts',
+      assistant: 'navAssistant', settings: 'navSettings'
+    };
+    setText('page-title', t(map[id] || 'navOverview'));
+  }
+}
+
+/* =========================================================
+   4. SECTION NAVIGATION
+   ========================================================= */
+function switchSection(sectionId) {
+  document.querySelectorAll('.page-section').forEach(sec => sec.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(btn => btn.classList.remove('active'));
+
+  const targetSec = document.getElementById('section-' + sectionId);
+  if (targetSec) targetSec.classList.add('active');
+
+  const navBtn = Array.from(document.querySelectorAll('.nav-item')).find(b =>
+    b.getAttribute('onclick')?.includes(`'${sectionId}'`)
+  );
+  if (navBtn) navBtn.classList.add('active');
+
+  // Update Page Title
+  const titles = {
+    overview: t('navOverview'),
+    sensors: t('navSensors'),
+    analysis: t('navAnalysis'),
+    prediction: t('navPrediction'),
+    irrigation: t('navIrrigation'),
+    alerts: t('navAlerts'),
+    assistant: t('navAssistant'),
+    settings: t('navSettings')
+  };
+  document.getElementById('page-title').textContent = titles[sectionId] || 'AgriSmart Dashboard';
+
+  // Close mobile sidebar if open
+  if (window.innerWidth <= 992) {
+    document.getElementById('sidebar').classList.remove('open');
+  }
+
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+/* =========================================================
+   5. CHARTS INITIALIZATION (Chart.js)
+   ========================================================= */
+function initCharts() {
+  // Moisture & Temp History Chart
+  const ctxMoist = document.getElementById('moistureChart').getContext('2d');
+  moistureChartInstance = new Chart(ctxMoist, {
+    type: 'line',
+    data: {
+      labels: state.labelsHistory,
+      datasets: [
+        {
+          label: t('moisture') + ' (%)',
+          data: state.moistureHistory,
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          fill: true,
+          tension: 0.35,
+          borderWidth: 2.5
+        },
+        {
+          label: t('temperature') + ' (°C)',
+          data: state.tempHistory,
+          borderColor: '#f59e0b',
+          backgroundColor: 'transparent',
+          borderDash: [5, 5],
+          tension: 0.35,
+          borderWidth: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'top' } },
+      scales: {
+        y: { min: 10, max: 80, grid: { color: '#f1f5f9' } },
+        x: { grid: { display: false } }
+      }
+    }
+  });
+
+  // NPK Radar Chart
+  const ctxNpk = document.getElementById('npkRadarChart').getContext('2d');
+  npkRadarChartInstance = new Chart(ctxNpk, {
+    type: 'radar',
+    data: {
+      labels: ['Nitrogen (N)', 'Phosphorus (P)', 'Potassium (K)', 'Moisture (%)', 'Humic Acid (x10)'],
+      datasets: [{
+        label: 'Current Soil Profile',
+        data: [state.sensors.nitrogen, state.sensors.phosphorus, state.sensors.potassium, state.sensors.moisture, 62],
+        backgroundColor: 'rgba(5, 150, 105, 0.2)',
+        borderColor: '#059669',
+        pointBackgroundColor: '#10b981',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        r: {
+          suggestedMin: 0,
+          suggestedMax: 120,
+          ticks: { backdropColor: 'transparent', stepSize: 30 }
+        }
+      }
+    }
+  });
+}
+
+function updateChartLanguage() {
+  if (!moistureChartInstance) return;
+  moistureChartInstance.data.datasets[0].label = t('moisture') + ' (%)';
+  moistureChartInstance.data.datasets[1].label = t('temperature') + ' (°C)';
+  moistureChartInstance.update();
+}
+
+/* =========================================================
+   6. TELEMETRY TABLE & LIVE SENSORS ENGINE
+   ========================================================= */
+const sensorMetadata = [
+  { id: 'moisture', name: 'Soil Moisture', unit: '%', range: '30 - 60 %', getVal: s => s.moisture.toFixed(1), hw: 'Capacitive V2 (GPIO34)' },
+  { id: 'temperature', name: 'Air Temperature', unit: '°C', range: '20 - 32 °C', getVal: s => s.temperature.toFixed(1), hw: 'DHT22 / SHT31 (GPIO4)' },
+  { id: 'humidity', name: 'Relative Humidity', unit: '%', range: '50 - 80 %', getVal: s => s.humidity.toFixed(1), hw: 'DHT22 / SHT31 (GPIO4)' },
+  { id: 'ph', name: 'Soil pH Level', unit: 'pH', range: '6.0 - 7.5 pH', getVal: s => s.ph.toFixed(2), hw: 'Analog pH Probe (ADC1_CH0)' },
+  { id: 'nitrogen', name: 'Nitrogen (N)', unit: 'mg/kg', range: '60 - 120 mg/kg', getVal: s => s.nitrogen, hw: 'RS485 Modbus NPK' },
+  { id: 'phosphorus', name: 'Phosphorus (P)', unit: 'mg/kg', range: '30 - 60 mg/kg', getVal: s => s.phosphorus, hw: 'RS485 Modbus NPK' },
+  { id: 'potassium', name: 'Potassium (K)', unit: 'mg/kg', range: '40 - 80 mg/kg', getVal: s => s.potassium, hw: 'RS485 Modbus NPK' },
+  { id: 'rainfall', name: 'Rain Precipitation', unit: 'mm', range: '10 - 200 mm', getVal: s => s.rainfall.toFixed(1), hw: 'Tipping Bucket Rain Gauge' }
+];
+
+function renderSensorTable() {
+  const tbody = document.getElementById('sensor-table-body');
+  if (!tbody) return;
+
+  tbody.innerHTML = sensorMetadata.map(meta => {
+    const val = meta.getVal(state.sensors);
+    let pillClass = 'pill-optimal';
+    let statusText = t('optimal');
+
+    if (meta.id === 'moisture') {
+      if (parseFloat(val) < 25) { pillClass = 'pill-critical'; statusText = 'Low (Dry)'; }
+      else if (parseFloat(val) > 75) { pillClass = 'pill-warning'; statusText = 'Saturated'; }
+    }
+
+    return `
+      <tr>
+        <td><strong>${meta.name}</strong></td>
+        <td><span style="font-weight:700; font-size:1.05rem;">${val}</span> <span style="color:var(--text-muted);">${meta.unit}</span></td>
+        <td><code>${meta.range}</code></td>
+        <td><span class="pill ${pillClass}">${statusText}</span></td>
+        <td style="color:var(--text-muted); font-size:0.8rem;">${meta.hw}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function updateLiveSensorsUI() {
+  // Update top cards
+  document.getElementById('val-moisture').textContent = state.sensors.moisture.toFixed(1);
+  document.getElementById('val-temp').textContent = state.sensors.temperature.toFixed(1);
+  document.getElementById('val-humidity').textContent = state.sensors.humidity.toFixed(1);
+  document.getElementById('val-ph').textContent = state.sensors.ph.toFixed(2);
+  document.getElementById('val-rainfall').textContent = state.sensors.rainfall.toFixed(1);
+
+  // Automatic irrigation check based on threshold
+  const thresh = parseFloat(document.getElementById('confMoistThreshold')?.value || 30);
+  if (state.sensors.moisture < thresh && !state.pumpActive) {
+    triggerAutoIrrigation(true, 'Soil moisture dropped below target threshold');
+  } else if (state.sensors.moisture > 55 && state.pumpActive && !state.pumpTimerId) {
+    triggerAutoIrrigation(false, 'Optimal soil hydration reached');
+  }
+
+  renderSensorTable();
+}
+
+function toggleSimStream() {
+  state.streaming = !state.streaming;
+  const btnTxt = document.getElementById('txt-stream-status');
+
+  if (state.streaming) {
+    btnTxt.textContent = t('liveStreamOn');
+    startSimStream();
+  } else {
+    btnTxt.textContent = t('liveStreamOff');
+    clearInterval(streamInterval);
+  }
+}
+
+function startSimStream() {
+  if (streamInterval) clearInterval(streamInterval);
+  streamInterval = setInterval(() => {
+    if (!state.streaming) return;
+
+    // Realistic subtle micro-fluctuations
+    const moistDelta = (Math.random() * 0.4 - 0.2) + (state.pumpActive ? 0.35 : -0.05);
+    state.sensors.moisture = Math.max(12, Math.min(88, state.sensors.moisture + moistDelta));
+
+    const tempDelta = (Math.random() * 0.2 - 0.1);
+    state.sensors.temperature = Math.max(18, Math.min(42, state.sensors.temperature + tempDelta));
+
+    updateLiveSensorsUI();
+
+    // Update charts on some intervals
+    if (Math.random() > 0.6 && moistureChartInstance) {
+      state.moistureHistory.shift();
+      state.moistureHistory.push(parseFloat(state.sensors.moisture.toFixed(1)));
+      state.tempHistory.shift();
+      state.tempHistory.push(parseFloat(state.sensors.temperature.toFixed(1)));
+      moistureChartInstance.update('none');
+    }
+  }, 2500);
+}
+
+function overrideSensor(sensor, value) {
+  state.sensors[sensor] = parseFloat(value);
+  if (sensor === 'moisture') {
+    document.getElementById('sliderMoistVal').textContent = `${value}%`;
+  } else if (sensor === 'ph') {
+    document.getElementById('sliderPhVal').textContent = `${value} pH`;
+  }
+  updateLiveSensorsUI();
+}
+
+/* =========================================================
+   7. CROP PREDICTION SYSTEM (AGRONOMIC MATRIX)
+   ========================================================= */
+const cropDatabase = [
+  {
+    name: { en: 'Rice (Paddy)', ta: 'நெல் (Paddy)', te: 'వరి (Paddy)', kn: 'ಭತ್ತ (Paddy)', hi: 'धान (Paddy)' },
+    idealN: 90, idealP: 45, idealK: 45, minMoist: 35, idealPhMin: 5.5, idealPhMax: 7.2,
+    cycle: '110-130 Days', profit: 'High Demand'
+  },
+  {
+    name: { en: 'Maize (Corn)', ta: 'மக்காச்சோளம்', te: 'మొక్కజొన్న', kn: 'ಮೆಕ್ಕೆಜೋಳ', hi: 'मक्का (Corn)' },
+    idealN: 80, idealP: 40, idealK: 40, minMoist: 28, idealPhMin: 5.8, idealPhMax: 7.5,
+    cycle: '90-105 Days', profit: 'Stable Market'
+  },
+  {
+    name: { en: 'Cotton', ta: 'பருத்தி', te: 'ప్రత్తి', kn: 'ಹತ್ತಿ', hi: 'कपास (Cotton)' },
+    idealN: 70, idealP: 35, idealK: 55, minMoist: 25, idealPhMin: 6.0, idealPhMax: 8.0,
+    cycle: '150-180 Days', profit: 'High Value Commercial'
+  },
+  {
+    name: { en: 'Pulses / Green Gram', ta: 'பயறு வகைகள்', te: 'పప్పుధాన్యాలు', kn: 'ಕಾಳುಗಳು', hi: 'दालें / मूंग' },
+    idealN: 30, idealP: 50, idealK: 30, minMoist: 20, idealPhMin: 6.0, idealPhMax: 7.5,
+    cycle: '65-75 Days', profit: 'Low Water / Fast Yield'
+  },
+  {
+    name: { en: 'Sugarcane', ta: 'கரும்பு', te: 'చెరకు', kn: 'ಕಬ್ಬು', hi: 'गन्ना (Sugarcane)' },
+    idealN: 110, idealP: 55, idealK: 70, minMoist: 45, idealPhMin: 6.0, idealPhMax: 8.0,
+    cycle: '10-12 Months', profit: 'Very High Yield'
+  },
+  {
+    name: { en: 'Tomato / Vegetables', ta: 'தக்காளி / காய்கறிகள்', te: 'టమాటా / కూరగాయలు', kn: 'ಟೊಮೆಟೊ / ತರಕಾರಿಗಳು', hi: 'टमाटर / सब्जियां' },
+    idealN: 60, idealP: 50, idealK: 60, minMoist: 30, idealPhMin: 6.2, idealPhMax: 7.0,
+    cycle: '75-90 Days', profit: 'Fast Cash Flow'
+  }
+];
+
+function calculateCropScore(crop, n, p, k, ph, moist) {
+  let score = 100;
+  score -= Math.abs(crop.idealN - n) * 0.45;
+  score -= Math.abs(crop.idealP - p) * 0.55;
+  score -= Math.abs(crop.idealK - k) * 0.45;
+
+  if (ph < crop.idealPhMin || ph > crop.idealPhMax) {
+    score -= 22;
+  }
+  if (moist < crop.minMoist) {
+    score -= 18;
+  }
+  return Math.max(38, Math.min(98, Math.round(score)));
+}
+
+function predictCropsFromInputs() {
+  const n = parseFloat(document.getElementById('inputN')?.value || state.sensors.nitrogen);
+  const p = parseFloat(document.getElementById('inputP')?.value || state.sensors.phosphorus);
+  const k = parseFloat(document.getElementById('inputK')?.value || state.sensors.potassium);
+  const ph = state.sensors.ph;
+  const moist = state.sensors.moisture;
+
+  const results = cropDatabase.map(c => ({
+    ...c,
+    suitabilityScore: calculateCropScore(c, n, p, k, ph, moist)
+  })).sort((a, b) => b.suitabilityScore - a.suitabilityScore);
+
+  const container = document.getElementById('prediction-cards-container');
+  if (!container) return;
+
+  container.innerHTML = results.map((item, idx) => {
+    const cropLocalized = item.name[state.lang] || item.name.en;
+    const isTop = idx === 0;
+    return `
+      <div class="card" style="${isTop ? 'border: 2px solid var(--primary); background: #f0fdf4;' : ''}">
+        <div class="card-header">
+          <h4 style="font-size:1.1rem; font-weight:700;">${cropLocalized}</h4>
+          <span class="pill ${item.suitabilityScore > 80 ? 'pill-optimal' : 'pill-warning'}">
+            ${item.suitabilityScore}% Match
+          </span>
+        </div>
+        <div style="font-size:0.86rem; color:var(--text-muted); display:flex; flex-direction:column; gap:6px;">
+          <div><strong>Cycle:</strong> ${item.cycle}</div>
+          <div><strong>Economics:</strong> ${item.profit}</div>
+          <div><strong>Optimal N-P-K:</strong> ${item.idealN}-${item.idealP}-${item.idealK}</div>
+        </div>
+        <div style="margin-top:14px;">
+          <button class="btn btn-secondary" style="width:100%; font-size:0.82rem;" onclick="askAssistantAboutCrop('${item.name.en.replace(/'/g, "\\'")}')">
+            <i data-lucide="bot" style="width:14px; height:14px;"></i> Consult Kisan AI
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  lucide.createIcons();
+}
+
+/* =========================================================
+   8. IRRIGATION MANAGEMENT ENGINE
+   ========================================================= */
+function togglePumpState(active) {
+  state.pumpActive = active;
+  const toggleOverview = document.getElementById('pumpToggleOverview');
+  const toggleMain = document.getElementById('pumpMainToggle');
+  const badge = document.getElementById('pumpBadgeState');
+  const info = document.getElementById('txt-pump-state-info');
+
+  if (toggleOverview) toggleOverview.checked = active;
+  if (toggleMain) toggleMain.checked = active;
+
+  if (!active && state.pumpTimerId) {
+    clearTimeout(state.pumpTimerId);
+    state.pumpTimerId = null;
+  }
+
+  if (badge) {
+    badge.textContent = active ? 'Status: RUNNING (12.4 L/min)' : 'Status: OFF';
+    badge.className = `pill ${active ? 'pill-optimal' : 'pill-warning'}`;
+  }
+  if (info) {
+    info.textContent = active ? 'Pump is dispensing irrigation water across Sector 1 lines.' : 'Status: Standby (Pressure Normal)';
+  }
+
+  addAlert(active ? 'info' : 'warning', `Irrigation pump ${active ? 'STARTED' : 'STOPPED'}.`);
+}
+
+function setPumpTimer(minutes) {
+  togglePumpState(true);
+  if (state.pumpTimerId) clearTimeout(state.pumpTimerId);
+  state.pumpTimerId = setTimeout(() => {
+    state.pumpTimerId = null;
+    togglePumpState(false);
+    addAlert('info', `Automated timer completed: ${minutes} minutes cycle finished.`);
+  }, minutes * 60 * 1000);
+}
+
+function triggerAutoIrrigation(turnOn, reason) {
+  if (state.pumpActive === turnOn) return;
+  togglePumpState(turnOn);
+  addAlert(turnOn ? 'warning' : 'info', `Auto-Governor: ${reason}. Pump is now ${turnOn ? 'ACTIVE' : 'IDLE'}.`);
+}
+
+/* =========================================================
+   9. ALERTS & EVENT LOG SYSTEM
+   ========================================================= */
+function addAlert(type, text) {
+  const newAlert = {
+    id: Date.now(),
+    type: type, // 'info' | 'warning' | 'danger'
+    text: text,
+    time: 'Just now'
+  };
+  state.alerts.unshift(newAlert);
+  if (state.alerts.length > 20) state.alerts.pop();
+  renderAlertsList();
+}
+
+function renderAlertsList() {
+  const container = document.getElementById('alerts-list-container');
+  if (!container) return;
+
+  if (state.alerts.length === 0) {
+    container.innerHTML = `<p style="color:var(--text-muted); font-size:0.9rem; padding:16px;">No recent alerts logged.</p>`;
+    return;
+  }
+
+  container.innerHTML = state.alerts.map(a => `
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:14px; border-radius:10px;
+      background:${a.type === 'warning' ? '#fffbeb' : a.type === 'danger' ? '#fef2f2' : '#f0fdf4'}; border-left:4px solid ${a.type === 'warning' ? '#f59e0b' : a.type === 'danger' ? '#ef4444' : '#10b981'};">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <i data-lucide="${a.type === 'warning' ? 'alert-triangle' : a.type === 'danger' ? 'alert-octagon' : 'check-circle'}" style="width:20px; height:20px; color:${a.type === 'warning' ? '#b45309' : a.type === 'danger' ? '#b91c1c' : '#047857'};"></i>
+        <span style="font-size:0.9rem; font-weight:500;">${a.text}</span>
+      </div>
+      <small style="color:var(--text-muted);">${a.time}</small>
+    </div>
+  `).join('');
+
+  lucide.createIcons();
+}
+
+function clearAlerts() {
+  state.alerts = [];
+  renderAlertsList();
+}
+
+/* =========================================================
+   10. GENAI FARMER ASSISTANT (MULTILINGUAL LOCAL + API)
+   ========================================================= */
+function renderQuickPills() {
+  const container = document.getElementById('quickPillsContainer');
+  if (!container) return;
+  const questions = t('quickQuestions');
+  container.innerHTML = '';
+  questions.forEach(q => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'quick-pill';
+    btn.textContent = q;
+    btn.addEventListener('click', () => sendQuickQuestion(q));
+    container.appendChild(btn);
+  });
+}
+
+function sendQuickQuestion(questionText) {
+  document.getElementById('chatInput').value = questionText;
+  handleChatSubmit(new Event('submit'));
+}
+
+function askAssistantAboutCrop(cropName) {
+  switchSection('assistant');
+  const localizedQuestions = {
+    en: `What are the best soil management practices and irrigation tips for ${cropName}?`,
+    ta: `${cropName} பயிருக்கு சிறந்த மண் மேலாண்மை மற்றும் பாசன முறைகள் என்ன?`,
+    te: `${cropName} పంట కోసం ఉత్తమ నేల నిర్వహణ మరియు నీటిపారుదల పద్ధతులు ఏమిటి?`,
+    kn: `${cropName} ಬೆಳೆಗೆ ಉತ್ತಮ ಮಣ್ಣಿನ ನಿರ್ವಹಣೆ ಮತ್ತು ನೀರಾವರಿ ವಿಧಾನಗಳು ಯಾವುವು?`,
+    hi: `${cropName} की फसल के लिए सर्वोत्तम मिट्टी प्रबंधन और सिंचाई के तरीके क्या हैं?`
+  };
+  const query = localizedQuestions[state.lang] || localizedQuestions.en;
+  document.getElementById('chatInput').value = query;
+  handleChatSubmit(new Event('submit'));
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function handleChatSubmit(e) {
+  if (e) e.preventDefault();
+  const input = document.getElementById('chatInput');
+  const question = input.value.trim();
+  if (!question) return;
+
+  appendChatMessage('user', escapeHtml(question));
+  input.value = '';
+
+  // Show temporary typing indicator
+  const typingId = appendChatMessage('assistant', `<span style="font-style:italic; opacity:0.8;">Thinking... Analyzing soil sensors (Moisture: ${state.sensors.moisture.toFixed(1)}%, pH: ${state.sensors.ph.toFixed(2)})...</span>`);
+
+  const apiKey = localStorage.getItem('agri_ai_key');
+  const endpoint = localStorage.getItem('agri_ai_endpoint');
+
+  if (apiKey && endpoint) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            {
+              role: 'system',
+              content: `You are an expert Indian agronomist assistant speaking in ${state.lang}. Live farm conditions: Soil Moisture=${state.sensors.moisture.toFixed(1)}%, pH=${state.sensors.ph.toFixed(2)}, Nitrogen=${state.sensors.nitrogen} mg/kg, Temp=${state.sensors.temperature.toFixed(1)}C. Provide concise, farmer-friendly, highly practical advice.`
+            },
+            { role: 'user', content: question }
+          ]
+        })
+      });
+
+      const data = await response.json();
+      const reply = data.choices?.[0]?.message?.content || 'Service responded without text.';
+      updateChatMessage(typingId, escapeHtml(reply));
+      return;
+    } catch (err) {
+      console.warn('External AI call failed, falling back to built-in agronomic engine:', err);
+    }
+  }
+
+  // Built-in intelligent agronomy response generator in the selected language
+  setTimeout(() => {
+    const localReply = generateFarmerResponse(question, state.lang);
+    updateChatMessage(typingId, localReply);
+  }, 750);
+}
+
+function generateFarmerResponse(query, lang) {
+  const q = query.toLowerCase();
+  const m = state.sensors.moisture.toFixed(1);
+  const ph = state.sensors.ph.toFixed(2);
+  const n = state.sensors.nitrogen;
+
+  const responses = {
+    en: {
+      moist: `Your current soil moisture is ${m}%. This is optimal for vegetative tillering in crops like Paddy and Maize. Do not over-irrigate to prevent root asphyxiation.`,
+      nitrogen: `Nitrogen is currently at ${n} mg/kg. To fix deficiencies naturally, consider applying neem-coated urea or incorporating green manure (Daincha/Sunn hemp).`,
+      irrigate: `With soil moisture at ${m}% and rainfall forecast at 12.5mm today, hold off irrigation for 24 hours to conserve power and groundwater.`,
+      general: `Based on your live metrics (Moisture: ${m}%, pH: ${ph}, N: ${n} mg/kg), soil health is strong. Maintain balanced NPK application and inspect for early weed emergence.`
+    },
+    ta: {
+      moist: `தற்போதைய மண் ஈரப்பதம் ${m}% ஆக உள்ளது. இது நெல் மற்றும் மக்காச்சோள பயிர்களுக்கு உகந்தது. வேரழுகல் நோயைத் தடுக்க அதிக நீர் தேங்குவதை தவிர்க்கவும்.`,
+      nitrogen: `நைட்ரஜன் அளவு ${n} mg/kg ஆக உள்ளது. வேப்பம்பூசப்பட்ட யூரியா அல்லது தக்கைப்பூண்டு போன்ற பசுந்தாள் உரங்களை இடுவதன் மூலம் சத்தை அதிகரிக்கலாம்.`,
+      irrigate: `மண் ஈரப்பதம் ${m}% ஆக இருப்பதாலும், லேசான மழை வாய்ப்பு உள்ளதாலும், அடுத்த 24 மணி நேரத்திற்கு பாசனத்தை ஒத்திவைப்பது நல்லது.`,
+      general: `உங்கள் நிலத்தின் தற்போதைய அளவீடுகள் (ஈரப்பதம்: ${m}%, pH: ${ph}) பயிர் வளர்ச்சிக்கு மிகவும் சாதகமாக உள்ளன. தொடர்ந்து சீரான உர மேலாண்மையைக் கடைப்பிடிக்கவும்.`
+    },
+    te: {
+      moist: `ప్రస్తుత నేల తేమ ${m}% గా ఉంది. ఇది వరి మరియు మొక్కజొన్న పైర్లకు చాలా అనుకూలం. వేరు కుళ్లు తెగులు రాకుండా అధిక నీటిని నిలవనీయకండి.`,
+      nitrogen: `నత్రజని స్థాయి ${n} mg/kg గా నమోదైంది. వేప పూత పూసిన యూరియా లేదా పచ్చిరొట్ట ఎరువులు వాడటం ద్వారా పోషకాలను పెంచుకోవచ్చు.`,
+      irrigate: `నేలలో తేమ ${m}% ఉన్నందున మరియు వర్ష సూచన ఉన్నందున, రాబోయే 24 గంటల వరకు నీరు పెట్టడం వాయిదా వేయండి.`,
+      general: `మీ ప్రస్తుత రీడింగులు (తేమ: ${m}%, pH: ${ph}) పంటకు చాలా బాగున్నాయి. సమతుల్య ఎరువుల నిర్వహణ పాటించండి.`
+    },
+    kn: {
+      moist: `ಪ್ರಸ್ತುತ ಮಣ್ಣಿನ ತೇವಾಂಶ ${m}% ಆಗಿದೆ. ಇದು ಭತ್ತ ಮತ್ತು ಮೆಕ್ಕೆಜೋಳ ಬೆಳೆಗೆ ಸೂಕ್ತವಾಗಿದೆ. ಬೇರು ಕೊಳೆಯುವುದನ್ನು ತಪ್ಪಿಸಲು ಅತಿಯಾದ ನೀರು ನಿಲ್ಲದಂತೆ ನೋಡಿಕೊಳ್ಳಿ.`,
+      nitrogen: `ಸಾರಜನಕ ಮಟ್ಟ ${n} mg/kg ಇದೆ. ಬೇವಿನ ಹಿಂಡಿ ಲೇಪಿತ ಯೂರಿಯಾ ಅಥವಾ ಹಸಿರೆಲೆ ಗೊಬ್ಬರ ಬಳಸುವುದರಿಂದ ಸಾರಜನಕ ಹೆಚ್ಚಿಸಬಹುದು.`,
+      irrigate: `ಮಣ್ಣಿನಲ್ಲಿ ${m}% ತೇವಾಂಶ ಇರುವುದರಿಂದ ಮತ್ತು ಮಳೆಯ ಮುನ್ಸೂಚನೆ ಇರುವುದರಿಂದ, ಮುಂದಿನ 24 ಗಂಟೆಗಳ ಕಾಲ ನೀರಾವರಿ ಮಾಡಬೇಡಿ.`,
+      general: `ನಿಮ್ಮ ತೋಟದ ಪ್ರಸ್ತುತ ಮಾಪನಗಳು (ತೇವಾಂಶ: ${m}%, pH: ${ph}) ಬೆಳೆಗಳಿಗೆ ಅತ್ಯುತ್ತಮವಾಗಿವೆ. ನಿಯಮಿತ ಪೋಷಕಾಂಶಗಳನ್ನು ನೀಡಿ.`
+    },
+    hi: {
+      moist: `वर्तमान मृदा नमी ${m}% है। यह धान और मक्का की फसल के लिए आदर्श है। जड़ों को सड़न से बचाने के लिए खेत में अत्यधिक जलभराव न होने दें।`,
+      nitrogen: `खेत में नाइट्रोजन का स्तर ${n} mg/kg है। नीम लेपित यूरिया या हरी खाद (ढैंचा) का प्रयोग करके इसे और सुधारा जा सकता है।`,
+      irrigate: `चूंकि नमी ${m}% है और बारिश की संभावना भी है, इसलिए अगले 24 घंटे के लिए सिंचाई टालना बुद्धिमानी होगी।`,
+      general: `आपके खेत के लाइव आंकड़े (नमी: ${m}%, pH: ${ph}, नाइट्रोजन: ${n} mg/kg) बेहतरीन हैं। संतुलित खाद प्रबंधन जारी रखें।`
+    }
+  };
+
+  const langSet = responses[lang] || responses.en;
+  if (q.includes('moist') || q.includes('ஈரப்பதம்') || q.includes('తేమ') || q.includes('ತೇವಾಂಶ') || q.includes('नमी')) {
+    return langSet.moist;
+  }
+  if (q.includes('nitrogen') || q.includes('urea') || q.includes('நைட்ரஜன்') || q.includes('నత్రజని') || q.includes('ಸಾರಜನಕ') || q.includes('नाइट्रोजन')) {
+    return langSet.nitrogen;
+  }
+  if (q.includes('irrig') || q.includes('water') || q.includes('பாசனம்') || q.includes('నీరు') || q.includes('ನೀರು') || q.includes('सिंचाई')) {
+    return langSet.irrigate;
+  }
+  return langSet.general;
+}
+
+function appendChatMessage(sender, htmlText) {
+  const container = document.getElementById('chatMessages');
+  const msgDiv = document.createElement('div');
+  const id = 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4);
+  msgDiv.id = id;
+  msgDiv.className = `chat-msg ${sender}`;
+
+  const iconName = sender === 'assistant' ? 'bot' : 'user';
+  msgDiv.innerHTML = `
+    <div class="chat-avatar"><i data-lucide="${iconName}"></i></div>
+    <div class="chat-bubble">${htmlText}</div>
+  `;
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+  lucide.createIcons();
+  return id;
+}
+
+function updateChatMessage(msgId, newHtml) {
+  const el = document.getElementById(msgId);
+  if (el) {
+    const bubble = el.querySelector('.chat-bubble');
+    if (bubble) bubble.innerHTML = newHtml;
+    const box = document.getElementById('chatMessages');
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+/* =========================================================
+   11. SETTINGS & LOCAL STORAGE
+   ========================================================= */
+function saveSystemSettings() {
+  const farmName = document.getElementById('confFarmName').value;
+  const moistThresh = document.getElementById('confMoistThreshold').value;
+  localStorage.setItem('agri_farm_name', farmName);
+  localStorage.setItem('agri_moist_thresh', moistThresh);
+  alert('Preferences saved successfully.');
+}
+
+function saveAiSettings() {
+  const key = document.getElementById('confAiKey').value.trim();
+  const endpoint = document.getElementById('confAiEndpoint').value.trim();
+  localStorage.setItem('agri_ai_key', key);
+  localStorage.setItem('agri_ai_endpoint', endpoint);
+  alert('AI Configuration updated in browser storage.');
+}
+
+function loadSavedSettings() {
+  const fName = localStorage.getItem('agri_farm_name');
+  const mThresh = localStorage.getItem('agri_moist_thresh');
+  const aiEndpoint = localStorage.getItem('agri_ai_endpoint');
+  const aiKey = localStorage.getItem('agri_ai_key');
+
+  if (fName) document.getElementById('confFarmName').value = fName;
+  if (mThresh) document.getElementById('confMoistThreshold').value = mThresh;
+  if (aiEndpoint) document.getElementById('confAiEndpoint').value = aiEndpoint;
+  if (aiKey) document.getElementById('confAiKey').value = aiKey;
+}
+
+function runComprehensiveAnalysis() {
+  const btn = document.getElementById('btn-reanalyze');
+  btn.style.opacity = '0.6';
+
+  setTimeout(() => {
+    btn.style.opacity = '1';
+    alert('Deep Agronomic Evaluation complete: Optimal bacterial microbial density detected.');
+  }, 600);
+}
+
+/* =========================================================
+   12. MANDATORY DOWNLOAD FUNCTION (BOTTOM-LEFT BUTTON)
+   Downloads the actual standalone single-file 'smart.html'
+   ========================================================= */
+function downloadSmartDashboard() {
+  try {
+    const fullSource = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+    const blob = new Blob([fullSource], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'smart.html';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (err) {
+    console.error('Download trigger failed:', err);
+    alert('Unable to complete file download directly: ' + err.message);
+  }
+}
+
+/* =========================================================
+   13. LIFECYCLE INITIALIZER
+   ========================================================= */
+window.addEventListener('DOMContentLoaded', () => {
+  lucide.createIcons();
+  initCharts();
+  loadSavedSettings();
+  changeLanguage(state.lang);
+  startSimStream();
+  predictCropsFromInputs();
+});
+</script>
+
+
+</body></html>

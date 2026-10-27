@@ -1,0 +1,2260 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Agriculture AI Assistant | Sense • Predict • Explain • Grow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #15803d;
+      --primary-light: #22c55e;
+      --primary-dark: #14532d;
+      --primary-subtle: #f0fdf4;
+      --accent: #ca8a04;
+      --accent-subtle: #fefce8;
+      --surface: #ffffff;
+      --background: #f8fafc;
+      --border: #e2e8f0;
+      --border-focus: #86efac;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --danger: #ef4444;
+      --danger-subtle: #fef2f2;
+      --warning: #f59e0b;
+      --warning-subtle: #fffbeb;
+      --info: #0284c7;
+      --info-subtle: #f0f9ff;
+      --sidebar-width: 260px;
+      --header-height: 72px;
+      --radius: 12px;
+      --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+      --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+      --font-main: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-main);
+      background: var(--background);
+      color: var(--text-main);
+      display: flex;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Sidebar */
+    aside {
+      width: var(--sidebar-width);
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 40;
+      border-right: 1px solid #1e293b;
+    }
+    .brand {
+      padding: 24px 20px;
+      border-bottom: 1px solid #1e293b;
+    }
+    .brand-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #4ade80;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-subtitle {
+      font-size: 0.72rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-top: 4px;
+    }
+    .nav-list {
+      list-style: none;
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1;
+      overflow-y: auto;
+    }
+    .nav-item button {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: #cbd5e1;
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.2s ease;
+    }
+    .nav-item button:hover {
+      background: #1e293b;
+      color: #ffffff;
+    }
+    .nav-item button.active {
+      background: var(--primary);
+      color: #ffffff;
+      font-weight: 600;
+      box-shadow: 0 4px 12px rgba(34, 197, 94, 0.35);
+    }
+    .nav-badge {
+      margin-left: auto;
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #334155;
+      color: #94a3b8;
+    }
+    .sidebar-footer {
+      padding: 16px 20px;
+      border-top: 1px solid #1e293b;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    /* Main Container */
+    main {
+      margin-left: var(--sidebar-width);
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    /* Header */
+    header {
+      height: var(--header-height);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .page-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .status-pill {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      background: #fef3c7;
+      color: #92400e;
+      border: 1px solid #fde68a;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      background: #f59e0b;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .lang-select-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--background);
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .lang-select-wrap label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    select {
+      background: transparent;
+      border: none;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* Content Area */
+    .content {
+      padding: 32px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .view-section {
+      display: none;
+      animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .view-section.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Banner / Transparency Notice */
+    .notice-banner {
+      background: #eff6ff;
+      border-left: 4px solid #3b82f6;
+      padding: 14px 18px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 0.86rem;
+      color: #1e3a8a;
+      line-height: 1.45;
+    }
+
+    /* Sensor Grid */
+    .sensor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .sensor-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .sensor-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lg);
+    }
+    .sensor-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--primary);
+    }
+    .sensor-label {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .sensor-value {
+      font-size: 1.7rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin: 8px 0 4px;
+      letter-spacing: -0.03em;
+    }
+    .sensor-unit {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-left: 2px;
+    }
+    .sensor-range {
+      font-size: 0.72rem;
+      color: #94a3b8;
+    }
+
+    /* Dashboard Layout 2-col */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 24px;
+      margin-bottom: 28px;
+    }
+    @media (max-width: 1024px) {
+      .dashboard-layout { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      background: var(--primary-subtle);
+      color: var(--primary-dark);
+      font-weight: 600;
+    }
+
+    /* Farm Health & Insight */
+    .insight-box {
+      background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);
+      border: 1px solid #bbf7d0;
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .insight-tag {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--primary-dark);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .insight-text {
+      font-size: 0.95rem;
+      color: #166534;
+      line-height: 1.5;
+    }
+
+    /* DNN Model Architecture Diagram */
+    .dnn-container {
+      background: #0f172a;
+      color: #f8fafc;
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-top: 16px;
+      overflow-x: auto;
+    }
+    .dnn-pipeline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-width: 680px;
+      gap: 16px;
+      padding: 10px 0;
+    }
+    .dnn-stage {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 14px 16px;
+      flex: 1;
+      text-align: center;
+    }
+    .dnn-stage-title {
+      font-size: 0.75rem;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .dnn-stage-nodes {
+      font-size: 0.82rem;
+      color: #94a3b8;
+      font-family: var(--font-mono);
+    }
+    .dnn-arrow {
+      color: #4ade80;
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+
+    /* Crop Card Specifics */
+    .prediction-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .predicted-crop-name {
+      font-size: 2.2rem;
+      font-weight: 800;
+      color: var(--primary-dark);
+      letter-spacing: -0.03em;
+    }
+    .suitability-score {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--primary);
+      background: var(--primary-subtle);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid #bbf7d0;
+    }
+    .suitability-bar {
+      height: 8px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 12px 0 20px;
+    }
+    .suitability-bar-fill {
+      height: 100%;
+      background: var(--primary-light);
+      border-radius: 999px;
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Forms and Inputs */
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-group label {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .input-wrap {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .input-wrap:focus-within {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+    }
+    .input-wrap input {
+      flex: 1;
+      padding: 10px 14px;
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 0.95rem;
+      color: var(--text-main);
+    }
+    .input-suffix {
+      padding: 0 12px;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      background: #f8fafc;
+      border-left: 1px solid var(--border);
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Buttons */
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: var(--primary-dark);
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover {
+      background: #f1f5f9;
+    }
+    .btn-danger {
+      background: var(--danger-subtle);
+      border-color: #fecaca;
+      color: var(--danger);
+    }
+    .btn-danger:hover {
+      background: #fee2e2;
+    }
+
+    /* Alerts */
+    .alert-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .alert-item {
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      line-height: 1.4;
+    }
+    .alert-item.warning {
+      background: var(--warning-subtle);
+      color: #92400e;
+      border: 1px solid #fde68a;
+    }
+    .alert-item.danger {
+      background: var(--danger-subtle);
+      color: #991b1b;
+      border: 1px solid #fecaca;
+    }
+    .alert-item.info {
+      background: var(--info-subtle);
+      color: #075985;
+      border: 1px solid #bae6fd;
+    }
+
+    /* Recommendations Table/Cards */
+    .reco-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .reco-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .reco-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .reco-type {
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .priority-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .priority-high { background: #fee2e2; color: #b91c1c; }
+    .priority-medium { background: #fef3c7; color: #b45309; }
+    .priority-low { background: #dcfce7; color: #15803d; }
+    .reco-body {
+      font-size: 0.92rem;
+      color: var(--text-main);
+      line-height: 1.5;
+    }
+
+    /* AI Farmer Assistant chat window */
+    .chat-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      height: 480px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-messages {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: #fcfdfd;
+    }
+    .chat-bubble {
+      max-width: 80%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 0.92rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: var(--primary);
+      color: #ffffff;
+      border-bottom-right-radius: 2px;
+    }
+    .chat-bubble.ai {
+      align-self: flex-start;
+      background: #f1f5f9;
+      color: var(--text-main);
+      border-bottom-left-radius: 2px;
+      border: 1px solid #e2e8f0;
+    }
+    .chat-bubble.ai-source-badge {
+      font-size: 0.7rem;
+      color: #64748b;
+      margin-top: 4px;
+      display: block;
+      font-weight: 600;
+    }
+    .chat-input-bar {
+      padding: 14px 18px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 10px;
+    }
+    .chat-input-bar input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: inherit;
+      outline: none;
+    }
+    .chat-input-bar input:focus {
+      border-color: var(--primary);
+    }
+    .quick-questions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .quick-btn {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .quick-btn:hover {
+      background: var(--primary-subtle);
+      border-color: #86efac;
+      color: var(--primary-dark);
+    }
+
+    /* History Table */
+    .table-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.88rem;
+    }
+    th {
+      background: #f8fafc;
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-main);
+    }
+    tr:last-child td { border-bottom: none; }
+
+    /* Canvas Sparkline */
+    #historyChartCanvas {
+      width: 100%;
+      height: 180px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+    }
+
+    /* Hardware Architecture Pipeline */
+    .hardware-pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .pipe-step {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+    }
+    .pipe-num {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.85rem;
+    }
+    .pipe-text h4 {
+      font-size: 0.95rem;
+      margin-bottom: 2px;
+    }
+    .pipe-text p {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    /* Small subtle "A" Download Button (fixed bottom-left) */
+    #tinyDownloadBtn {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      background: #334155;
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 100;
+      opacity: 0.7;
+      transition: all 0.2s ease;
+      padding: 0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    #tinyDownloadBtn:hover {
+      opacity: 1;
+      background: var(--primary);
+      border-color: var(--primary-light);
+      color: #ffffff;
+      transform: scale(1.08);
+    }
+    #tinyDownloadBtn:focus-visible {
+      outline: 2px solid #22c55e;
+      outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Small fixed download button (Requirement 20) -->
+  <button id="tinyDownloadBtn" title="Download dashboard" aria-label="Download dashboard">A</button>
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="brand">
+      <div class="brand-title">
+        <span>🌱</span> SMART AGRI AI
+      </div>
+      <div class="brand-subtitle">Sense • Predict • Explain • Grow</div>
+    </div>
+    <ul class="nav-list">
+      <li class="nav-item"><button class="active" onclick="switchView('dashboard')"><span>📊</span> Dashboard</button></li>
+      <li class="nav-item"><button onclick="switchView('sensors')"><span>📡</span> Live Sensors</button></li>
+      <li class="nav-item"><button onclick="switchView('prediction')"><span>🧠</span> Crop Prediction</button></li>
+      <li class="nav-item"><button onclick="switchView('ai-assistant')"><span>🤖</span> AI Farmer Assistant</button></li>
+      <li class="nav-item"><button onclick="switchView('recommendations')"><span>📋</span> Recommendations</button></li>
+      <li class="nav-item"><button onclick="switchView('history')"><span>📈</span> Sensor History</button></li>
+      <li class="nav-item"><button onclick="switchView('hardware')"><span>🔌</span> Future Hardware</button></li>
+      <li class="nav-item"><button onclick="switchView('settings')"><span>⚙️</span> Settings</button></li>
+    </ul>
+    <div class="sidebar-footer">
+      <div>Prototype: v1.0.4</div>
+      <div style="color: #4ade80; margin-top: 4px;">● Simulation/Manual Mode</div>
+    </div>
+  </aside>
+
+  <!-- Main View -->
+  <main>
+    <header>
+      <div class="header-left">
+        <h1 class="page-title" id="pageTitleHeading">Farm Overview</h1>
+        <span class="status-pill">
+          <span class="status-dot"></span>
+          <span id="headerModePill">Simulation Mode</span>
+        </span>
+      </div>
+      <div class="header-right">
+        <div class="lang-select-wrap">
+          <label for="langSelector">🌐 Lang:</label>
+          <select id="langSelector" onchange="changeLanguage(this.value)">
+            <option value="en">English</option>
+            <option value="ta">தமிழ் (Tamil)</option>
+            <option value="te">తెలుగు (Telugu)</option>
+            <option value="kn">ಕನ್ನಡ (Kannada)</option>
+            <option value="hi">हिन्दी (Hindi)</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- Mandatory Status Transparency Banner -->
+      <div class="notice-banner">
+        <span style="font-size: 1.2rem;">ℹ️</span>
+        <div>
+          <strong>College Demonstration Mode:</strong> This software is operating as a <em>software prototype with simulated/manual sensor input</em>. Physical ESP32 IoT hardware is not currently connected and is mapped in the Future Hardware section. Predictions use a feed-forward Deep Neural Network (MLP) prototype architecture.
+        </div>
+      </div>
+
+      <!-- VIEW 1: DASHBOARD -->
+      <section id="view-dashboard" class="view-section active">
+        <!-- 7 Realistic Sensor Cards -->
+        <div class="sensor-grid">
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="moisture">Soil Moisture</span>
+            <div class="sensor-value"><span id="dash-moisture">42</span><span class="sensor-unit">%</span></div>
+            <div class="sensor-range">Ideal: 35 - 65%</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="temperature">Temperature</span>
+            <div class="sensor-value"><span id="dash-temp">28</span><span class="sensor-unit">°C</span></div>
+            <div class="sensor-range">Ideal: 20 - 35°C</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="humidity">Humidity</span>
+            <div class="sensor-value"><span id="dash-humidity">67</span><span class="sensor-unit">%</span></div>
+            <div class="sensor-range">Ideal: 50 - 80%</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="ph">Soil pH</span>
+            <div class="sensor-value"><span id="dash-ph">6.5</span><span class="sensor-unit">pH</span></div>
+            <div class="sensor-range">Ideal: 6.0 - 7.5</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="nitrogen">Nitrogen (N)</span>
+            <div class="sensor-value"><span id="dash-n">78</span><span class="sensor-unit">mg/kg</span></div>
+            <div class="sensor-range">Ideal: 50 - 120</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="phosphorus">Phosphorus (P)</span>
+            <div class="sensor-value"><span id="dash-p">42</span><span class="sensor-unit">mg/kg</span></div>
+            <div class="sensor-range">Ideal: 30 - 60</div>
+          </div>
+          <div class="sensor-card">
+            <span class="sensor-label" data-i18n="potassium">Potassium (K)</span>
+            <div class="sensor-value"><span id="dash-k">55</span><span class="sensor-unit">mg/kg</span></div>
+            <div class="sensor-range">Ideal: 40 - 80</div>
+          </div>
+        </div>
+
+        <div class="dashboard-layout">
+          <!-- Left Col -->
+          <div>
+            <!-- AI Farm Insight Card -->
+            <div class="insight-box">
+              <div class="insight-tag">
+                <span>✦</span> <span data-i18n="insightTitle">Dynamic Farm Insight</span>
+              </div>
+              <p class="insight-text" id="dashboardDynamicInsight">Current farm conditions indicate 42% soil moisture and pH 6.5. The DNN prototype analysis identifies Rice as the most suitable crop with condition assessed as 'Suitable'. Monitor field balance.</p>
+            </div>
+
+            <!-- Crop Prediction Summary Card -->
+            <div class="card">
+              <div class="card-title">
+                <span data-i18n="predictionSummaryTitle">Prototype Crop Suitability</span>
+                <span class="card-badge" id="dashSoilConditionBadge">Soil: Suitable</span>
+              </div>
+              <div class="prediction-header">
+                <div class="predicted-crop-name" id="dashPredictedCrop">Rice</div>
+                <div class="suitability-score" id="dashSuitabilityScore">95% Prototype Score</div>
+              </div>
+              <div class="suitability-bar">
+                <div class="suitability-bar-fill" id="dashSuitabilityBar" style="width: 95%;"></div>
+              </div>
+              <div style="font-size: 0.85rem; color: var(--text-muted); display:flex; justify-content:space-between;">
+                <span><strong>Key Drivers:</strong> Moisture, pH, NPK Levels</span>
+                <span><strong>Alternatives:</strong> <span id="dashAltCrops">Maize, Cotton</span></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Col: Alerts Panel -->
+          <div>
+            <div class="card">
+              <div class="card-title">
+                <span data-i18n="alertsTitle">Real-Time Alerts</span>
+                <span class="card-badge" id="alertCountBadge" style="background: rgb(240, 253, 244); color: rgb(21, 128, 61);">0 Active</span>
+              </div>
+              <div class="alert-stack" id="dashboardAlertsContainer"><div class="alert-item info"><span>✓</span><span>All current sensor parameters are within acceptable agronomic limits.</span></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: SENSOR INPUT / SIMULATION -->
+      <section id="view-sensors" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span>Sensor Parameter Input</span>
+            <span class="card-badge">Manual Input / Simulation</span>
+          </div>
+          <p style="font-size:0.86rem; color:var(--text-muted); margin-bottom: 20px;">
+            Modify physical parameters below to simulate field sensor readings or trigger random farm scenario telemetry.
+          </p>
+
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Soil Moisture</label>
+              <div class="input-wrap">
+                <input type="number" id="inputMoisture" min="0" max="100" step="1" value="42">
+                <span class="input-suffix">%</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Temperature</label>
+              <div class="input-wrap">
+                <input type="number" id="inputTemp" min="-10" max="60" step="0.5" value="28">
+                <span class="input-suffix">°C</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Humidity</label>
+              <div class="input-wrap">
+                <input type="number" id="inputHumidity" min="0" max="100" step="1" value="67">
+                <span class="input-suffix">%</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Soil pH</label>
+              <div class="input-wrap">
+                <input type="number" id="inputPH" min="0" max="14" step="0.1" value="6.5">
+                <span class="input-suffix">pH</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Nitrogen (N)</label>
+              <div class="input-wrap">
+                <input type="number" id="inputN" min="0" max="250" step="1" value="78">
+                <span class="input-suffix">mg/kg</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Phosphorus (P)</label>
+              <div class="input-wrap">
+                <input type="number" id="inputP" min="0" max="200" step="1" value="42">
+                <span class="input-suffix">mg/kg</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Potassium (K)</label>
+              <div class="input-wrap">
+                <input type="number" id="inputK" min="0" max="300" step="1" value="55">
+                <span class="input-suffix">mg/kg</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="handleAnalyzeClick()">⚡ Analyze Farm</button>
+            <button class="btn btn-secondary" onclick="simulateRandomFieldData()">🎲 Randomize Telemetry</button>
+            <button class="btn btn-secondary" onclick="resetDefaultDemoValues()">↺ Reset to Demo Values</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Threshold Diagnostics &amp; Sensor Warnings</div>
+          <div class="alert-stack" id="sensorPageWarnings"><div class="alert-item info"><span>✓</span><span>All sensor values are within realistic agronomic bounds.</span></div></div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: CROP PREDICTION (DNN/MLP EXPLANATION) -->
+      <section id="view-prediction" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span>Crop Suitability Engine</span>
+            <span class="card-badge">Prototype Analysis</span>
+          </div>
+
+          <div class="prediction-header">
+            <div>
+              <div style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; font-weight:700;">Top Recommended Crop</div>
+              <div class="predicted-crop-name" id="predPageCropName">Rice</div>
+            </div>
+            <div style="margin-left: auto; text-align: right;">
+              <div style="font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; font-weight:700;">Prototype Suitability Score</div>
+              <div class="suitability-score" id="predPageSuitabilityScore">95%</div>
+            </div>
+          </div>
+
+          <div class="suitability-bar">
+            <div class="suitability-bar-fill" id="predPageSuitabilityBar" style="width: 95%;"></div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 20px 0;">
+            <div style="padding:14px; background:#f8fafc; border:1px solid var(--border); border-radius:8px;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">SOIL STATUS</span>
+              <div style="font-size:1.1rem; font-weight:700; color:var(--primary);" id="predPageSoilStatus">Suitable</div>
+            </div>
+            <div style="padding:14px; background:#f8fafc; border:1px solid var(--border); border-radius:8px;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">ALTERNATIVE CROP #1</span>
+              <div style="font-size:1.1rem; font-weight:700;" id="predAlt1">Maize (95%)</div>
+            </div>
+            <div style="padding:14px; background:#f8fafc; border:1px solid var(--border); border-radius:8px;">
+              <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">ALTERNATIVE CROP #2</span>
+              <div style="font-size:1.1rem; font-weight:700;" id="predAlt2">Cotton (95%)</div>
+            </div>
+          </div>
+
+          <!-- Deep Neural Network Architecture -->
+          <div class="card-title" style="margin-top: 32px;">
+            <span>Feed-Forward Deep Neural Network (MLP) Architecture</span>
+            <span class="card-badge" style="background: #e0f2fe; color: #0369a1;">Design Specification</span>
+          </div>
+          <p style="font-size: 0.85rem; color: var(--text-muted);">
+            Feed-Forward DNN/MLP is the planned prediction model for crop suitability. In this current prototype, the scoring pipeline uses an agronomic heuristic simulator that mirrors this neural network mapping:
+          </p>
+
+          <div class="dnn-container">
+            <div class="dnn-pipeline">
+              <div class="dnn-stage">
+                <div class="dnn-stage-title">Input Layer (7)</div>
+                <div class="dnn-stage-nodes">Moisture, Temp,<br>Humidity, pH,<br>N, P, K</div>
+              </div>
+              <div class="dnn-arrow">→</div>
+              <div class="dnn-stage">
+                <div class="dnn-stage-title">Hidden Layer 1</div>
+                <div class="dnn-stage-nodes">64 Neurons<br>(ReLU Activation)<br>Dense + BatchNorm</div>
+              </div>
+              <div class="dnn-arrow">→</div>
+              <div class="dnn-stage">
+                <div class="dnn-stage-title">Hidden Layer 2</div>
+                <div class="dnn-stage-nodes">32 Neurons<br>(ReLU Activation)<br>Dropout (0.2)</div>
+              </div>
+              <div class="dnn-arrow">→</div>
+              <div class="dnn-stage">
+                <div class="dnn-stage-title">Output Layer (8)</div>
+                <div class="dnn-stage-nodes">Softmax Probabilities<br>8 Crop Classes</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: AI FARMER ASSISTANT -->
+      <section id="view-ai-assistant" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span>AI Farmer Assistant (Google Gemini / Local Agronomic Fallback)</span>
+            <span class="card-badge" id="aiModeStatusBadge">Local Heuristic Fallback</span>
+          </div>
+
+          <div class="quick-questions">
+            <button class="quick-btn" onclick="sendQuickQuestion('What crop should I grow?')">What crop should I grow?</button>
+            <button class="quick-btn" onclick="sendQuickQuestion('Why is this crop suitable?')">Why is this crop suitable?</button>
+            <button class="quick-btn" onclick="sendQuickQuestion('When should I irrigate?')">When should I irrigate?</button>
+            <button class="quick-btn" onclick="sendQuickQuestion('What should I do about low nitrogen?')">What should I do about low nitrogen?</button>
+            <button class="quick-btn" onclick="sendQuickQuestion('Is my soil condition suitable?')">Is my soil condition suitable?</button>
+            <button class="quick-btn" onclick="sendQuickQuestion('Explain this result simply.')">Explain this result simply.</button>
+          </div>
+
+          <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+              <div class="chat-bubble ai">
+                Namaste! I am your Smart Agriculture AI Assistant. I have received your field telemetry (Soil Moisture, Temp, Humidity, pH, and NPK). How can I assist your farming decisions today?
+                <span class="chat-bubble ai-source-badge">System Initialized</span>
+              </div>
+            </div>
+            <div class="chat-input-bar">
+              <input type="text" id="chatInput" placeholder="Ask in simple words (e.g. Why is Rice suitable?)..." onkeydown="if(event.key==='Enter') handleUserChat();">
+              <button class="btn btn-primary" onclick="handleUserChat()">Send</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: RECOMMENDATIONS -->
+      <section id="view-recommendations" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span data-i18n="recoHeader">Targeted Farm Recommendations</span>
+            <span class="card-badge">Agronomic Rules</span>
+          </div>
+          <p style="font-size:0.86rem; color:var(--text-muted); margin-bottom: 20px;">
+            Actionable advisories calculated based on current sensor thresholds and crop environmental profiles. (No dangerous chemicals or exact chemical dosages are prescribed).
+          </p>
+
+          <div class="reco-grid">
+            <!-- Irrigation -->
+            <div class="reco-card">
+              <div>
+                <div class="reco-top">
+                  <span class="reco-type" data-i18n="recoIrrigationTitle">Irrigation Advisory</span>
+                  <span class="priority-badge priority-low" id="recoIrrigationPriority">LOW</span>
+                </div>
+                <p class="reco-body" id="recoIrrigationText">Current soil moisture is moderate. Monitor moisture before the next irrigation.</p>
+              </div>
+            </div>
+
+            <!-- Soil Health -->
+            <div class="reco-card">
+              <div>
+                <div class="reco-top">
+                  <span class="reco-type" data-i18n="recoSoilTitle">Soil Health Advisory</span>
+                  <span class="priority-badge priority-low" id="recoSoilPriority">LOW</span>
+                </div>
+                <p class="reco-body" id="recoSoilText">Soil pH level is within the preferred range for most crops.</p>
+              </div>
+            </div>
+
+            <!-- Nutrients -->
+            <div class="reco-card">
+              <div>
+                <div class="reco-top">
+                  <span class="reco-type" data-i18n="recoNutrientTitle">Nutrient Management</span>
+                  <span class="priority-badge priority-low" id="recoNutrientPriority">LOW</span>
+                </div>
+                <p class="reco-body" id="recoNutrientText">NPK macronutrient balance is adequate for active vegetative growth.</p>
+              </div>
+            </div>
+
+            <!-- Crop Selection -->
+            <div class="reco-card">
+              <div>
+                <div class="reco-top">
+                  <span class="reco-type" data-i18n="recoCropTitle">Crop Strategy</span>
+                  <span class="priority-badge priority-low">SUGGESTED</span>
+                </div>
+                <p class="reco-body" id="recoCropText">Rice is indicated as a prime candidate crop based on real-time simulated soil &amp; climate parameters.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 6: SENSOR HISTORY -->
+      <section id="view-history" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span>Historical Telemetry &amp; Prediction Log</span>
+            <button class="btn btn-danger" onclick="clearTelemetryHistory()">Clear History</button>
+          </div>
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom: 16px;">
+            Past runs stored in browser <code>localStorage</code>.
+          </p>
+
+          <canvas id="historyChartCanvas" width="800" height="180"></canvas>
+
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Moisture</th>
+                  <th>Temp</th>
+                  <th>Humidity</th>
+                  <th>pH</th>
+                  <th>N-P-K</th>
+                  <th>Predicted Crop</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody"><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>6.5</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Groundnut</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">95%</span></td>
+        </tr><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>6.5</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Maize</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">92%</span></td>
+        </tr><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>8.4</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Wheat</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">39%</span></td>
+        </tr><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>6.5</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Rice</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">83%</span></td>
+        </tr><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>6.5</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Rice</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">83%</span></td>
+        </tr><tr>
+          <td>undefined</td>
+          <td>undefined%</td>
+          <td>undefined°C</td>
+          <td>undefined%</td>
+          <td>6.5</td>
+          <td>undefined-undefined-undefined</td>
+          <td><strong>Rice</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">86%</span></td>
+        </tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 7: FUTURE ESP32 INTEGRATION -->
+      <section id="view-hardware" class="view-section">
+        <div class="card">
+          <div class="card-title">
+            <span>Future Hardware Integration Architecture</span>
+            <span class="card-badge" style="background:#fef3c7; color:#92400e;">Stage 2 Roadmap</span>
+          </div>
+
+          <div class="notice-banner" style="margin-top: 10px;">
+            <span>📌</span>
+            <div><strong>Status Transparency:</strong> Current prototype uses simulated/manual sensor values. ESP32 integration is planned as a future implementation.</div>
+          </div>
+
+          <div class="hardware-pipeline">
+            <div class="pipe-step">
+              <div class="pipe-num">1</div>
+              <div class="pipe-text">
+                <h4>ESP32 Microcontroller Core</h4>
+                <p>Low-power 32-bit dual-core microcontroller collecting ADC and digital bus signals.</p>
+              </div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-num">2</div>
+              <div class="pipe-text">
+                <h4>Physical Sensor Bus</h4>
+                <p>Capacitive Soil Moisture, DHT22 (Temp &amp; Humidity), Industrial Soil pH Probe, RS485 Modbus NPK Soil Sensor.</p>
+              </div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-num">3</div>
+              <div class="pipe-text">
+                <h4>Wi-Fi &amp; MQTT / REST Gateway</h4>
+                <p>ESP32 transmits structured JSON telemetry via Wi-Fi 802.11 b/g/n using secure HTTP POST or MQTT broker.</p>
+              </div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-num">4</div>
+              <div class="pipe-text">
+                <h4>Backend Ingestion &amp; Smart Agriculture Dashboard</h4>
+                <p>Validation layer verifies sensor bounds and stores readings into time-series database.</p>
+              </div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-num">5</div>
+              <div class="pipe-text">
+                <h4>Feed-Forward Deep Neural Network (MLP) Crop Prediction</h4>
+                <p>Edge or cloud inference running feed-forward neural net with 7 input features to yield crop suitability scores.</p>
+              </div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-num">6</div>
+              <div class="pipe-text">
+                <h4>Google Gemini Generative AI Assistant &amp; Multilingual Translation</h4>
+                <p>Model synthesizes context into farmer-friendly explanations in Hindi, Tamil, Telugu, Kannada, or English.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 8: SETTINGS -->
+      <section id="view-settings" class="view-section">
+        <div class="card">
+          <div class="card-title">Settings &amp; Demo Configuration</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Farm Name</label>
+              <input type="text" id="settingFarmName" class="input-wrap" style="padding:10px 14px;" value="Cauvery Delta Demo Farm" onchange="saveSettings()">
+            </div>
+            <div class="form-group">
+              <label>Farmer Name</label>
+              <input type="text" id="settingFarmerName" class="input-wrap" style="padding:10px 14px;" value="Demonstration User" onchange="saveSettings()">
+            </div>
+            <div class="form-group">
+              <label>Simulation Auto-Tick Interval</label>
+              <select id="settingSimInterval" class="input-wrap" style="padding:10px 14px;" onchange="saveSettings()">
+                <option value="0">Manual Only (No Auto-tick)</option>
+                <option value="5">Every 5 Seconds</option>
+                <option value="15">Every 15 Seconds</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Temperature Unit</label>
+              <select id="settingTempUnit" class="input-wrap" style="padding:10px 14px;" onchange="saveSettings()">
+                <option value="C">Celsius (°C)</option>
+                <option value="F">Fahrenheit (°F)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="card-title" style="margin-top:24px;">Google Gemini API Key (Optional)</div>
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:12px;">
+            Keys entered here remain strictly in your browser's local memory (localStorage) and are never hardcoded or transmitted elsewhere. Leave empty to use built-in local agronomic AI fallback.
+          </p>
+          <div class="form-group" style="max-width: 600px; margin-bottom: 20px;">
+            <div class="input-wrap">
+              <input type="password" id="geminiApiKeyInput" placeholder="AIzaSy...">
+              <button class="btn btn-secondary" onclick="saveGeminiKey()">Save Key</button>
+            </div>
+            <span id="apiKeySaveStatus" style="font-size:0.8rem; color:var(--primary); margin-top:4px; display:none;">✓ Key saved locally</span>
+          </div>
+
+          <div class="btn-group">
+            <button class="btn btn-secondary" onclick="resetDefaultDemoValues()">↺ Reset Demo Data</button>
+            <button class="btn btn-danger" onclick="clearTelemetryHistory()">🗑 Clear Sensor History</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    /* ==========================================================================
+       1. GLOBAL STATE & DEMO DEFAULTS
+       ========================================================================== */
+    const DEFAULT_SENSORS = {
+      moisture: 42,
+      temp: 28,
+      humidity: 67,
+      ph: 6.5,
+      n: 78,
+      p: 42,
+      k: 55
+    };
+
+    let currentSensors = { ...DEFAULT_SENSORS };
+    let currentLanguage = 'en';
+    let simulationTimer = null;
+
+    /* Crop Database & Heuristic Matching Engine (Simulating DNN Softmax Output) */
+    const CROP_DATABASE = [
+      { name: "Rice", minM: 35, maxM: 90, minT: 20, maxT: 38, minH: 60, maxH: 95, minPh: 5.5, maxPh: 7.5, minN: 60, maxN: 140 },
+      { name: "Wheat", minM: 20, maxM: 50, minT: 12, maxT: 25, minH: 30, maxH: 70, minPh: 6.0, maxPh: 7.5, minN: 40, maxN: 100 },
+      { name: "Maize", minM: 25, maxM: 60, minT: 18, maxT: 32, minH: 40, maxH: 80, minPh: 5.8, maxPh: 7.2, minN: 50, maxN: 110 },
+      { name: "Cotton", minM: 20, maxM: 50, minT: 22, maxT: 36, minH: 40, maxH: 75, minPh: 6.0, maxPh: 8.0, minN: 40, maxN: 90 },
+      { name: "Sugarcane", minM: 40, maxM: 80, minT: 24, maxT: 38, minH: 55, maxH: 90, minPh: 6.0, maxPh: 7.8, minN: 70, maxN: 150 },
+      { name: "Groundnut", minM: 20, maxM: 45, minT: 20, maxT: 32, minH: 40, maxH: 70, minPh: 5.8, maxPh: 7.0, minN: 20, maxN: 60 },
+      { name: "Tomato", minM: 30, maxM: 65, minT: 18, maxT: 30, minH: 45, maxH: 75, minPh: 6.0, maxPh: 7.0, minN: 50, maxN: 120 },
+      { name: "Potato", minM: 30, maxM: 60, minT: 15, maxT: 24, minH: 50, maxH: 80, minPh: 5.0, maxPh: 6.5, minN: 40, maxN: 100 }
+    ];
+
+    /* Multilingual Text Dictionaries (Text Only - No Audio/TTS) */
+    const I18N = {
+      en: {
+        pageTitle: "Farm Overview",
+        modeSim: "Simulation Mode",
+        moisture: "Soil Moisture",
+        temperature: "Temperature",
+        humidity: "Humidity",
+        ph: "Soil pH",
+        nitrogen: "Nitrogen (N)",
+        phosphorus: "Phosphorus (P)",
+        potassium: "Potassium (K)",
+        insightTitle: "Dynamic Farm Insight",
+        predictionSummaryTitle: "Prototype Crop Suitability",
+        alertsTitle: "Real-Time Alerts",
+        recoHeader: "Targeted Farm Recommendations",
+        recoIrrigationTitle: "Irrigation Advisory",
+        recoSoilTitle: "Soil Health Advisory",
+        recoNutrientTitle: "Nutrient Management",
+        recoCropTitle: "Crop Strategy",
+        irrigationOk: "Current soil moisture is moderate. Monitor moisture before the next irrigation.",
+        irrigationLow: "Low soil moisture detected. Irrigation may be required soon.",
+        irrigationHigh: "Soil moisture is elevated. Postpone irrigation to prevent waterlogging.",
+        soilOk: "Soil pH level is within the preferred range for most crops.",
+        soilLow: "Soil pH is acidic. Monitor soil conditions before planting acid-sensitive crops.",
+        soilHigh: "Soil pH is alkaline. Monitor nutrient uptake capacity.",
+        nutrientOk: "NPK macronutrient balance is adequate for active vegetative growth.",
+        nutrientLowN: "Nitrogen level is low. Check nitrogen availability before applying fertilizer."
+      },
+      ta: {
+        pageTitle: "பண்ணை கண்ணோட்டம்",
+        modeSim: "மாதிரி முறை (Simulation)",
+        moisture: "மண் ஈரப்பதம்",
+        temperature: "வெப்பநிலை",
+        humidity: "ஈரப்பதம்",
+        ph: "மண் pH",
+        nitrogen: "நைட்ரஜன் (N)",
+        phosphorus: "பாஸ்பரஸ் (P)",
+        potassium: "பொட்டாசியம் (K)",
+        insightTitle: "பண்ணை நுண்ணறிவு",
+        predictionSummaryTitle: "பயிர் பொருத்தம் (மாதிரி)",
+        alertsTitle: "எச்சரிக்கைகள்",
+        recoHeader: "பண்ணை பரிந்துரைகள்",
+        recoIrrigationTitle: "நீர்ப்பாசன ஆலோசனை",
+        recoSoilTitle: "மண் வள ஆலோசனை",
+        recoNutrientTitle: "ஊட்டச்சத்து மேலாண்மை",
+        recoCropTitle: "பயிர் உத்தி",
+        irrigationOk: "மண்ணின் ஈரப்பதம் மிதமாக உள்ளது. அடுத்த நீர்ப்பாசனத்திற்கு முன் ஈரப்பதத்தை கண்காணிக்கவும்.",
+        irrigationLow: "குறைந்த மண் ஈரப்பதம் கண்டறியப்பட்டது. விரைவில் நீர்ப்பாசனம் தேவைப்படலாம்.",
+        irrigationHigh: "மண் ஈரப்பதம் அதிகமாக உள்ளது. பயிர் அழுகலைத் தடுக்க நீர்ப்பாசனத்தைத் தள்ளிப்போடவும்.",
+        soilOk: "மண் pH அளவு பெரும்பாலான பயிர்களுக்கு ஏற்ற வரம்பிற்குள் உள்ளது.",
+        soilLow: "மண் அமிலத்தன்மை கொண்டது. கார அமில நிலையை கண்காணிக்கவும்.",
+        soilHigh: "மண் காரத்தன்மை கொண்டது. ஊட்டச்சத்து உறிஞ்சுதலை சரிபார்க்கவும்.",
+        nutrientOk: "NPK சத்துக்களின் சமநிலை பயிர் வளர்ச்சிக்கு போதுமானதாக உள்ளது.",
+        nutrientLowN: "நைட்ரஜன் அளவு குறைவாக உள்ளது. உரம் இடுவதற்கு முன் அளவை சரிபார்க்கவும்."
+      },
+      te: {
+        pageTitle: "వ్యవసాయ అవలోకనం",
+        modeSim: "సిమ్యులేషన్ మోడ్",
+        moisture: "నేల తేమ",
+        temperature: "ఉష్ణోగ్రత",
+        humidity: "గాలిలో తేమ",
+        ph: "నేల pH",
+        nitrogen: "నత్రజని (N)",
+        phosphorus: "భాస్వరం (P)",
+        potassium: "పొటాషియం (K)",
+        insightTitle: "వ్యవసాయ అంతర్దృష్టి",
+        predictionSummaryTitle: "పంట అనుకూలత",
+        alertsTitle: "హెచ్చరికలు",
+        recoHeader: "వ్యవసాయ సిఫార్సులు",
+        recoIrrigationTitle: "నీటిపారుదల సలహా",
+        recoSoilTitle: "నేల ఆరోగ్యం",
+        recoNutrientTitle: "పోషకాల నిర్వహణ",
+        recoCropTitle: "పంట వ్యూహం",
+        irrigationOk: "నేల తేమ సాధారణంగా ఉంది. తదుపరి తడి ఇచ్చే ముందు తేమను గమనించండి.",
+        irrigationLow: "నేలలో తేమ తక్కువగా ఉంది. త్వరలో నీటిపారుదల అవసరం కావచ్చు.",
+        irrigationHigh: "నేలలో తేమ ఎక్కువగా ఉంది. నీరు నిల్వ ఉండకుండా చూసుకోండి.",
+        soilOk: "నేల pH అనుకూల పరిధిలో ఉంది.",
+        soilLow: "నేల ఆమ్లత ఎక్కువగా ఉంది.",
+        soilHigh: "నేల క్షారత ఎక్కువగా ఉంది.",
+        nutrientOk: "పోషకాల సమతుల్యత బాగుంది.",
+        nutrientLowN: "నత్రజని తక్కువగా ఉంది. ఎరువులు వేసే ముందు పరిశీలించండి."
+      },
+      kn: {
+        pageTitle: "ಕೃಷಿ ಅವಲೋಕನ",
+        modeSim: "ಸಿಮ್ಯುಲೇಶನ್ ಮೋಡ್",
+        moisture: "ಮಣ್ಣಿನ ತೇವಾಂಶ",
+        temperature: "ತಾಪಮಾನ",
+        humidity: "ಆರ್ದ್ರತೆ",
+        ph: "ಮಣ್ಣಿನ pH",
+        nitrogen: "ಸಾರಜನಕ (N)",
+        phosphorus: "ರಂಜಕ (P)",
+        potassium: "ಪೊಟ್ಯಾಶಿಯಂ (K)",
+        insightTitle: "ಕೃಷಿ ಒಳನೋಟ",
+        predictionSummaryTitle: "ಬೆಳೆ ಹೊಂದಾಣಿಕೆ",
+        alertsTitle: "ಎಚ್ಚರಿಕೆಗಳು",
+        recoHeader: "ಕೃಷಿ ಶಿಫಾರಸುಗಳು",
+        recoIrrigationTitle: "ನೀರಾವರಿ ಸಲಹೆ",
+        recoSoilTitle: "ಮಣ್ಣಿನ ಆರೋಗ್ಯ",
+        recoNutrientTitle: "ಪೋಷಕಾಂಶ ನಿರ್ವಹಣೆ",
+        recoCropTitle: "ಬೆಳೆ ತಂತ್ರ",
+        irrigationOk: "ಮಣ್ಣಿನ ತೇವಾಂಶ ಹಿತಮಿತವಾಗಿದೆ. ಮುಂದಿನ ನೀರಾವರಿ ಮುನ್ನ ಪರೀಕ್ಷಿಸಿ.",
+        irrigationLow: "ಮಣ್ಣಿನಲ್ಲಿ ಕಡಿಮೆ ತೇವಾಂಶವಿದೆ. ನೀರಾವರಿ ಅಗತ್ಯವಿರಬಹುದು.",
+        irrigationHigh: "ಮಣ್ಣಿನಲ್ಲಿ ತೇವಾಂಶ ಅಧಿಕವಾಗಿದೆ. ನೀರು ನಿಲ್ಲದಂತೆ ಎಚ್ಚರವಹಿಸಿ.",
+        soilOk: "ಮಣ್ಣಿನ pH ಮಟ್ಟವು ಸೂಕ್ತವಾಗಿದೆ.",
+        soilLow: "ಮಣ್ಣು ಆಮ್ಲೀಯವಾಗಿದೆ.",
+        soilHigh: "ಮಣ್ಣು ಕ್ಷಾರೀಯವಾಗಿದೆ.",
+        nutrientOk: "ಪೋಷಕಾಂಶಗಳ ಸಮತೋಲನ ತೃಪ್ತಿಕರವಾಗಿದೆ.",
+        nutrientLowN: "ಸಾರಜನಕ ಕೊರತೆಯಿದೆ. ಪೋಷಕಾಂಶ ನಿರ್ವಹಣೆ ಅಗತ್ಯ."
+      },
+      hi: {
+        pageTitle: "कृषि डैशबोर्ड",
+        modeSim: "सिमुलेशन मोड",
+        moisture: "मिट्टी की नमी",
+        temperature: "तापमान",
+        humidity: "आर्द्रता",
+        ph: "मिट्टी का pH",
+        nitrogen: "नाइट्रोजन (N)",
+        phosphorus: "फास्फोरस (P)",
+        potassium: "पोटेशियम (K)",
+        insightTitle: "खेत की स्थिति व समझ",
+        predictionSummaryTitle: "फसल उपयुक्तता (प्रोटोटाइप)",
+        alertsTitle: "सक्रिय अलर्ट",
+        recoHeader: "कृषि सिफारिशें",
+        recoIrrigationTitle: "सिंचाई सलाह",
+        recoSoilTitle: "मृदा स्वास्थ्य",
+        recoNutrientTitle: "पोषक तत्व प्रबंधन",
+        recoCropTitle: "फसल रणनीति",
+        irrigationOk: "मिट्टी में नमी सामान्य है। अगली सिंचाई से पहले नमी की निगरानी करें।",
+        irrigationLow: "मिट्टी में नमी कम पाई गई है। जल्द ही सिंचाई की आवश्यकता हो सकती है।",
+        irrigationHigh: "मिट्टी में नमी अधिक है। जलभराव रोकने हेतु सिंचाई टालें।",
+        soilOk: "मिट्टी का pH अधिकांश फसलों के लिए अनुकूल सीमा में है।",
+        soilLow: "मिट्टी अम्लीय है। फसल रोपण से पहले स्थिति पर ध्यान दें।",
+        soilHigh: "मिट्टी क्षारीय है। पोषक तत्व अवशोषण की निगरानी करें।",
+        nutrientOk: "पौधों के विकास के लिए NPK पोषक तत्व संतुलित हैं।",
+        nutrientLowN: "नाइट्रोजन का स्तर कम है। अतिरिक्त खाद डालने से पहले उपलब्धता की जांच करें।"
+      }
+    };
+
+    /* ==========================================================================
+       2. INITIALIZATION & STORAGE
+       ========================================================================== */
+    window.addEventListener('DOMContentLoaded', () => {
+      loadSettings();
+      loadTelemetryInputs();
+      runAnalysis(false); // Initial analysis with demo data
+      updateHistoryTable();
+      drawHistoryChart();
+
+      // Setup download button functionality
+      document.getElementById('tinyDownloadBtn').addEventListener('click', downloadDashboardHTML);
+    });
+
+    function switchView(viewName) {
+      document.querySelectorAll('.view-section').forEach(sec => sec.classList.remove('active'));
+      const target = document.getElementById(`view-${viewName}`);
+      if (target) target.classList.add('active');
+
+      document.querySelectorAll('.nav-item button').forEach(btn => btn.classList.remove('active'));
+      const activeBtn = Array.from(document.querySelectorAll('.nav-item button')).find(b => b.getAttribute('onclick')?.includes(viewName));
+      if (activeBtn) activeBtn.classList.add('active');
+
+      if (viewName === 'history') {
+        setTimeout(drawHistoryChart, 50);
+      }
+    }
+
+    /* ==========================================================================
+       3. SENSOR ANALYSIS & HEURISTIC DNN PREDICTION
+       ========================================================================== */
+    function readInputs() {
+      return {
+        moisture: parseFloat(document.getElementById('inputMoisture').value) || 0,
+        temp: parseFloat(document.getElementById('inputTemp').value) || 0,
+        humidity: parseFloat(document.getElementById('inputHumidity').value) || 0,
+        ph: parseFloat(document.getElementById('inputPH').value) || 0,
+        n: parseFloat(document.getElementById('inputN').value) || 0,
+        p: parseFloat(document.getElementById('inputP').value) || 0,
+        k: parseFloat(document.getElementById('inputK').value) || 0
+      };
+    }
+
+    function calculateCropSuitability(s) {
+      const scored = CROP_DATABASE.map(crop => {
+        let score = 100;
+
+        // Moisture score
+        if (s.moisture < crop.minM) score -= Math.min(30, (crop.minM - s.moisture) * 2);
+        else if (s.moisture > crop.maxM) score -= Math.min(30, (s.moisture - crop.maxM) * 1.5);
+
+        // Temp score
+        if (s.temp < crop.minT) score -= Math.min(25, (crop.minT - s.temp) * 3);
+        else if (s.temp > crop.maxT) score -= Math.min(25, (s.temp - crop.maxT) * 3);
+
+        // pH score
+        if (s.ph < crop.minPh) score -= Math.min(25, (crop.minPh - s.ph) * 20);
+        else if (s.ph > crop.maxPh) score -= Math.min(25, (s.ph - crop.maxPh) * 20);
+
+        // Nitrogen score
+        if (s.n < crop.minN) score -= Math.min(20, (crop.minN - s.n) * 0.8);
+
+        score = Math.max(20, Math.min(95, Math.round(score)));
+        return { name: crop.name, score };
+      });
+
+      scored.sort((a, b) => b.score - a.score);
+      return scored;
+    }
+
+    function generateAlertsAndWarnings(s) {
+      const alerts = [];
+      const warnings = [];
+
+      if (s.moisture < 30) {
+        alerts.push({ type: 'danger', msg: 'Low soil moisture detected. Irrigation may be required.' });
+        warnings.push('Low Soil Moisture (< 30%): Crops may experience moisture stress.');
+      } else if (s.moisture > 75) {
+        alerts.push({ type: 'warning', msg: 'High soil moisture detected. Watch for root aeration issues.' });
+        warnings.push('High Soil Moisture (> 75%): Risk of waterlogging in non-paddy crops.');
+      }
+
+      if (s.temp > 38) {
+        alerts.push({ type: 'danger', msg: 'High ambient temperature detected (>38°C). Elevated transpiration.' });
+        warnings.push('High Temperature Alert: Consider shade/moisture conservation.');
+      } else if (s.temp < 15) {
+        alerts.push({ type: 'info', msg: 'Low temperature detected (<15°C). Growth rate may decelerate.' });
+      }
+
+      if (s.ph < 5.8) {
+        alerts.push({ type: 'warning', msg: 'pH level is outside the preferred range (Acidic soil detected).' });
+        warnings.push('Acidic Soil (pH < 5.8): Key macronutrients like P may be locked.');
+      } else if (s.ph > 7.8) {
+        alerts.push({ type: 'warning', msg: 'pH level is outside the preferred range (Alkaline soil detected).' });
+        warnings.push('Alkaline Soil (pH > 7.8): Micronutrient uptake may decrease.');
+      }
+
+      if (s.n < 50) {
+        alerts.push({ type: 'warning', msg: 'Low soil Nitrogen (N) detected. Leaf chlorosis possible.' });
+        warnings.push('Low Nitrogen: Check fertility management.');
+      }
+      if (s.p < 25) {
+        alerts.push({ type: 'warning', msg: 'Low soil Phosphorus (P) detected.' });
+      }
+      if (s.k < 35) {
+        alerts.push({ type: 'warning', msg: 'Low soil Potassium (K) detected.' });
+      }
+
+      if (alerts.length === 0) {
+        alerts.push({ type: 'info', msg: 'All current sensor parameters are within acceptable agronomic limits.' });
+      }
+
+      return { alerts, warnings };
+    }
+
+    function runAnalysis(recordToHistory = true) {
+      currentSensors = readInputs();
+
+      // Update Dashboard Sensor Cards
+      document.getElementById('dash-moisture').innerText = currentSensors.moisture;
+      document.getElementById('dash-temp').innerText = currentSensors.temp;
+      document.getElementById('dash-humidity').innerText = currentSensors.humidity;
+      document.getElementById('dash-ph').innerText = currentSensors.ph.toFixed(1);
+      document.getElementById('dash-n').innerText = currentSensors.n;
+      document.getElementById('dash-p').innerText = currentSensors.p;
+      document.getElementById('dash-k').innerText = currentSensors.k;
+
+      // Predict Crop
+      const rankedCrops = calculateCropSuitability(currentSensors);
+      const topCrop = rankedCrops[0];
+      const alt1 = rankedCrops[1] ? rankedCrops[1].name : 'None';
+      const alt2 = rankedCrops[2] ? rankedCrops[2].name : 'None';
+
+      const soilConditionText = (currentSensors.ph >= 6.0 && currentSensors.ph <= 7.5 && currentSensors.moisture >= 35)
+        ? 'Suitable'
+        : (currentSensors.ph < 5.5 || currentSensors.ph > 8.0 ? 'Needs Attention' : 'Marginal');
+
+      // Update Dashboard view
+      document.getElementById('dashPredictedCrop').innerText = topCrop.name;
+      document.getElementById('dashSuitabilityScore').innerText = `${topCrop.score}% Prototype Score`;
+      document.getElementById('dashSuitabilityBar').style.width = `${topCrop.score}%`;
+      document.getElementById('dashSoilConditionBadge').innerText = `Soil: ${soilConditionText}`;
+      document.getElementById('dashAltCrops').innerText = `${alt1}, ${alt2}`;
+
+      // Update Prediction view
+      document.getElementById('predPageCropName').innerText = topCrop.name;
+      document.getElementById('predPageSuitabilityScore').innerText = `${topCrop.score}%`;
+      document.getElementById('predPageSuitabilityBar').style.width = `${topCrop.score}%`;
+      document.getElementById('predPageSoilStatus').innerText = soilConditionText;
+      document.getElementById('predAlt1').innerText = `${alt1} (${rankedCrops[1]?.score || 0}%)`;
+      document.getElementById('predAlt2').innerText = `${alt2} (${rankedCrops[2]?.score || 0}%)`;
+
+      // Update Alerts & Warnings
+      const { alerts, warnings } = generateAlertsAndWarnings(currentSensors);
+      renderAlerts(alerts);
+      renderWarnings(warnings);
+
+      // Update Dynamic Insight
+      updateDynamicInsight(topCrop.name, soilConditionText);
+
+      // Update Recommendations
+      updateRecommendations(topCrop.name);
+
+      // Save to localStorage history
+      if (recordToHistory) {
+        saveAnalysisToHistory(currentSensors, topCrop.name, topCrop.score);
+        updateHistoryTable();
+        drawHistoryChart();
+      }
+    }
+
+    function handleAnalyzeClick() {
+      runAnalysis(true);
+      switchView('dashboard');
+    }
+
+    function renderAlerts(alerts) {
+      const container = document.getElementById('dashboardAlertsContainer');
+      const badge = document.getElementById('alertCountBadge');
+      container.innerHTML = '';
+
+      let warningDangerCount = 0;
+      alerts.forEach(a => {
+        if (a.type !== 'info') warningDangerCount++;
+        const el = document.createElement('div');
+        el.className = `alert-item ${a.type}`;
+        el.innerHTML = `<span>${a.type === 'danger' ? '⚠️' : a.type === 'warning' ? '⚡' : '✓'}</span><span>${a.msg}</span>`;
+        container.appendChild(el);
+      });
+
+      badge.innerText = `${warningDangerCount} Active`;
+      badge.style.background = warningDangerCount > 0 ? '#fee2e2' : '#f0fdf4';
+      badge.style.color = warningDangerCount > 0 ? '#b91c1c' : '#15803d';
+    }
+
+    function renderWarnings(warnings) {
+      const container = document.getElementById('sensorPageWarnings');
+      container.innerHTML = '';
+      if (warnings.length === 0) {
+        container.innerHTML = '<div class="alert-item info"><span>✓</span><span>All sensor values are within realistic agronomic bounds.</span></div>';
+        return;
+      }
+      warnings.forEach(w => {
+        const el = document.createElement('div');
+        el.className = 'alert-item warning';
+        el.innerHTML = `<span>⚠️</span><span>${w}</span>`;
+        container.appendChild(el);
+      });
+    }
+
+    function updateDynamicInsight(cropName, soilCondition) {
+      const dict = I18N[currentLanguage] || I18N.en;
+      const insight = `Current farm conditions indicate ${currentSensors.moisture}% soil moisture and pH ${currentSensors.ph.toFixed(1)}. The DNN prototype analysis identifies ${cropName} as the most suitable crop with condition assessed as '${soilCondition}'. Monitor field balance.`;
+      document.getElementById('dashboardDynamicInsight').innerText = insight;
+    }
+
+    function updateRecommendations(cropName) {
+      const dict = I18N[currentLanguage] || I18N.en;
+
+      // Irrigation
+      const irrTextEl = document.getElementById('recoIrrigationText');
+      const irrPrioEl = document.getElementById('recoIrrigationPriority');
+      if (currentSensors.moisture < 30) {
+        irrTextEl.innerText = dict.irrigationLow;
+        irrPrioEl.className = 'priority-badge priority-high';
+        irrPrioEl.innerText = 'HIGH';
+      } else if (currentSensors.moisture > 75) {
+        irrTextEl.innerText = dict.irrigationHigh;
+        irrPrioEl.className = 'priority-badge priority-medium';
+        irrPrioEl.innerText = 'MEDIUM';
+      } else {
+        irrTextEl.innerText = dict.irrigationOk;
+        irrPrioEl.className = 'priority-badge priority-low';
+        irrPrioEl.innerText = 'LOW';
+      }
+
+      // Soil Health
+      const soilTextEl = document.getElementById('recoSoilText');
+      const soilPrioEl = document.getElementById('recoSoilPriority');
+      if (currentSensors.ph < 5.8) {
+        soilTextEl.innerText = dict.soilLow;
+        soilPrioEl.className = 'priority-badge priority-high';
+        soilPrioEl.innerText = 'HIGH';
+      } else if (currentSensors.ph > 7.8) {
+        soilTextEl.innerText = dict.soilHigh;
+        soilPrioEl.className = 'priority-badge priority-medium';
+        soilPrioEl.innerText = 'MEDIUM';
+      } else {
+        soilTextEl.innerText = dict.soilOk;
+        soilPrioEl.className = 'priority-badge priority-low';
+        soilPrioEl.innerText = 'LOW';
+      }
+
+      // Nutrient
+      const nutTextEl = document.getElementById('recoNutrientText');
+      const nutPrioEl = document.getElementById('recoNutrientPriority');
+      if (currentSensors.n < 50) {
+        nutTextEl.innerText = dict.nutrientLowN;
+        nutPrioEl.className = 'priority-badge priority-medium';
+        nutPrioEl.innerText = 'MEDIUM';
+      } else {
+        nutTextEl.innerText = dict.nutrientOk;
+        nutPrioEl.className = 'priority-badge priority-low';
+        nutPrioEl.innerText = 'LOW';
+      }
+
+      // Crop
+      document.getElementById('recoCropText').innerText = `${cropName} is indicated as a prime candidate crop based on real-time simulated soil & climate parameters.`;
+    }
+
+    /* ==========================================================================
+       4. SIMULATION CONTROLS & RESET
+       ========================================================================== */
+    function simulateRandomFieldData() {
+      document.getElementById('inputMoisture').value = Math.floor(25 + Math.random() * 55);
+      document.getElementById('inputTemp').value = Math.floor(18 + Math.random() * 20);
+      document.getElementById('inputHumidity').value = Math.floor(40 + Math.random() * 45);
+      document.getElementById('inputPH').value = (5.5 + Math.random() * 2.5).toFixed(1);
+      document.getElementById('inputN').value = Math.floor(30 + Math.random() * 90);
+      document.getElementById('inputP').value = Math.floor(20 + Math.random() * 50);
+      document.getElementById('inputK').value = Math.floor(30 + Math.random() * 60);
+
+      runAnalysis(false);
+    }
+
+    function resetDefaultDemoValues() {
+      document.getElementById('inputMoisture').value = DEFAULT_SENSORS.moisture;
+      document.getElementById('inputTemp').value = DEFAULT_SENSORS.temp;
+      document.getElementById('inputHumidity').value = DEFAULT_SENSORS.humidity;
+      document.getElementById('inputPH').value = DEFAULT_SENSORS.ph;
+      document.getElementById('inputN').value = DEFAULT_SENSORS.n;
+      document.getElementById('inputP').value = DEFAULT_SENSORS.p;
+      document.getElementById('inputK').value = DEFAULT_SENSORS.k;
+
+      runAnalysis(true);
+    }
+
+    /* ==========================================================================
+       5. MULTILINGUAL SUPPORT (TEXT ONLY)
+       ========================================================================== */
+    function changeLanguage(langKey) {
+      currentLanguage = langKey;
+      const dict = I18N[langKey] || I18N.en;
+
+      // Update static data-i18n elements
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        const k = el.getAttribute('data-i18n');
+        if (dict[k]) el.innerText = dict[k];
+      });
+
+      document.getElementById('pageTitleHeading').innerText = dict.pageTitle || 'Farm Overview';
+      document.getElementById('headerModePill').innerText = dict.modeSim || 'Simulation Mode';
+
+      // Re-trigger dynamic texts
+      runAnalysis(false);
+    }
+
+    /* ==========================================================================
+       6. AI FARMER ASSISTANT (GEMINI REST + LOCAL FALLBACK)
+       ========================================================================== */
+    function sendQuickQuestion(q) {
+      document.getElementById('chatInput').value = q;
+      handleUserChat();
+    }
+
+    async function handleUserChat() {
+      const inputEl = document.getElementById('chatInput');
+      const question = inputEl.value.trim();
+      if (!question) return;
+
+      appendChatMessage(question, 'user');
+      inputEl.value = '';
+
+      const apiKey = localStorage.getItem('smart_agri_gemini_key') || '';
+      const topCrop = document.getElementById('dashPredictedCrop').innerText;
+      const score = document.getElementById('dashSuitabilityScore').innerText;
+
+      if (apiKey) {
+        document.getElementById('aiModeStatusBadge').innerText = 'Gemini 2.5 Flash Online';
+        document.getElementById('aiModeStatusBadge').style.background = '#dcfce7';
+        document.getElementById('aiModeStatusBadge').style.color = '#15803d';
+        appendChatMessage('Thinking...', 'ai', 'loadingBubble');
+
+        try {
+          const answer = await callGeminiAPI(apiKey, question, topCrop, score);
+          removeLoadingBubble();
+          appendChatMessage(answer, 'ai', null, 'Powered by Google Gemini');
+        } catch (err) {
+          removeLoadingBubble();
+          console.warn('Gemini API call failed, falling back to local heuristic:', err);
+          const fallbackAnswer = generateLocalAIResponse(question, topCrop);
+          appendChatMessage(fallbackAnswer, 'ai', null, 'Local Agronomic Fallback (API Error/Quota)');
+        }
+      } else {
+        document.getElementById('aiModeStatusBadge').innerText = 'Local Heuristic Fallback';
+        const fallbackAnswer = generateLocalAIResponse(question, topCrop);
+        setTimeout(() => {
+          appendChatMessage(fallbackAnswer, 'ai', null, 'Local Agronomic Knowledgebase');
+        }, 300);
+      }
+    }
+
+    function appendChatMessage(text, sender, elementId = null, badgeText = null) {
+      const chatBox = document.getElementById('chatMessages');
+      const bubble = document.createElement('div');
+      bubble.className = `chat-bubble ${sender}`;
+      if (elementId) bubble.id = elementId;
+      bubble.innerText = text;
+
+      if (badgeText && sender === 'ai') {
+        const badge = document.createElement('span');
+        badge.className = 'chat-bubble ai-source-badge';
+        badge.innerText = badgeText;
+        bubble.appendChild(badge);
+      }
+
+      chatBox.appendChild(bubble);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function removeLoadingBubble() {
+      const bubble = document.getElementById('loadingBubble');
+      if (bubble) bubble.remove();
+    }
+
+    function generateLocalAIResponse(question, topCrop) {
+      const q = question.toLowerCase();
+      const s = currentSensors;
+      const lang = currentLanguage;
+
+      if (lang === 'ta') {
+        if (q.includes('crop') || q.includes('grow') || q.includes('பயிர்')) {
+          return `தற்போதைய மண் ஈரப்பதம் (${s.moisture}%) மற்றும் pH (${s.ph}) அடிப்படையில், உங்கள் நிலத்திற்கு "${topCrop}" மிகவும் பொருத்தமானது. இது சீரான மகசூலுக்கு உகந்தது.`;
+        }
+        if (q.includes('irrigate') || q.includes('water') || q.includes('நீர்')) {
+          return s.moisture < 30
+            ? `மண்ணின் ஈரப்பதம் ${s.moisture}% ஆக குறைந்துள்ளது. பயிர் வாடாமல் இருக்க உடனடியாக நீர்ப்பாசனம் செய்யவும்.`
+            : `மண்ணின் ஈரப்பதம் ${s.moisture}% போதுமானதாக உள்ளது. இப்போது நீர்ப்பாசனம் தேவையில்லை.`;
+        }
+        return `உங்கள் பண்ணை நிலவரம்: ஈரப்பதம் ${s.moisture}%, pH ${s.ph}, வெப்பநிலை ${s.temp}°C. சிறந்த தேர்வு: ${topCrop}.`;
+      }
+
+      // Default English fallback responses
+      if (q.includes('what crop') || q.includes('grow')) {
+        return `Based on your soil moisture of ${s.moisture}%, temperature of ${s.temp}°C, and soil pH of ${s.ph}, the prototype suggests "${topCrop}". Its growth characteristics closely align with your current field parameters.`;
+      }
+      if (q.includes('why is this crop') || q.includes('why')) {
+        return `"${topCrop}" is recommended because your current temperature (${s.temp}°C) and soil moisture (${s.moisture}%) match the ideal vegetative window. Soil pH of ${s.ph} also provides good bioavailability of primary nutrients.`;
+      }
+      if (q.includes('irrigate') || q.includes('water')) {
+        return s.moisture < 30
+          ? `Your soil moisture is low (${s.moisture}%). You should schedule irrigation soon to avoid crop water stress.`
+          : `Soil moisture is at a healthy ${s.moisture}%. No immediate irrigation is required. Check again in 24–48 hours.`;
+      }
+      if (q.includes('nitrogen') || q.includes('low nitrogen')) {
+        return `Current nitrogen level is ${s.n} mg/kg. To support vigorous leaf and stem development, consider adding organic compost or well-rotted farmyard manure before sowing.`;
+      }
+      if (q.includes('suitable') || q.includes('soil condition')) {
+        return `Your soil pH is ${s.ph} with Nitrogen at ${s.n} mg/kg, Phosphorus at ${s.p} mg/kg, and Potassium at ${s.k} mg/kg. Overall status is suitable for crops in the ${topCrop} family.`;
+      }
+      if (q.includes('explain') || q.includes('simple')) {
+        return `In simple terms: Your field has good moisture (${s.moisture}%) and healthy soil pH (${s.ph}). The system recommends ${topCrop} as the safest and most productive choice for these conditions.`;
+      }
+
+      return `Current farm readings: Moisture ${s.moisture}%, Temp ${s.temp}°C, pH ${s.ph}, NPK (${s.n}-${s.p}-${s.k}). Conditions best support ${topCrop}. Maintain regular soil moisture monitoring.`;
+    }
+
+    async function callGeminiAPI(apiKey, prompt, topCrop, score) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      const contextPrompt = `
+You are the "AI Farmer Assistant" in an agricultural IoT college project demonstration.
+The current farm conditions are:
+- Soil Moisture: ${currentSensors.moisture}%
+- Temperature: ${currentSensors.temp}°C
+- Humidity: ${currentSensors.humidity}%
+- Soil pH: ${currentSensors.ph}
+- Nitrogen (N): ${currentSensors.n} mg/kg
+- Phosphorus (P): ${currentSensors.p} mg/kg
+- Potassium (K): ${currentSensors.k} mg/kg
+- Predicted Crop: ${topCrop} (Prototype Suitability Score: ${score})
+Selected Language: ${currentLanguage}
+
+Farmer's Question: "${prompt}"
+
+Provide a farmer-friendly, practical, short, and respectful explanation in the requested language (${currentLanguage}). Do not provide dangerous chemical fertilizer dosages. Speak simply and clearly.
+      `.trim();
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: contextPrompt }] }],
+          generationConfig: { maxOutputTokens: 250, temperature: 0.3 }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.candidates[0].content.parts[0].text;
+    }
+
+    /* ==========================================================================
+       7. LOCAL STORAGE & SENSOR HISTORY
+       ========================================================================== */
+    function saveAnalysisToHistory(s, crop, score) {
+      let history = JSON.parse(localStorage.getItem('smart_agri_history') || '[]');
+      const record = {
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        moisture: s.moisture,
+        temp: s.temp,
+        humidity: s.humidity,
+        ph: s.ph,
+        n: s.n,
+        p: s.p,
+        k: s.k,
+        crop: crop,
+        score: score
+      };
+      history.unshift(record);
+      if (history.length > 25) history = history.slice(0, 25);
+      localStorage.setItem('smart_agri_history', JSON.stringify(history));
+    }
+
+    function updateHistoryTable() {
+      const history = JSON.parse(localStorage.getItem('smart_agri_history') || '[]');
+      const tbody = document.getElementById('historyTableBody');
+      tbody.innerHTML = '';
+
+      if (history.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8;">No historical telemetry recorded yet. Perform an analysis to log readings.</td></tr>';
+        return;
+      }
+
+      history.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${row.timestamp}</td>
+          <td>${row.moisture}%</td>
+          <td>${row.temp}°C</td>
+          <td>${row.humidity}%</td>
+          <td>${row.ph}</td>
+          <td>${row.n}-${row.p}-${row.k}</td>
+          <td><strong>${row.crop}</strong></td>
+          <td><span style="color:var(--primary); font-weight:700;">${row.score}%</span></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function clearTelemetryHistory() {
+      if (confirm('Clear all logged sensor and prediction history from local storage?')) {
+        localStorage.removeItem('smart_agri_history');
+        updateHistoryTable();
+        drawHistoryChart();
+      }
+    }
+
+    function drawHistoryChart() {
+      const canvas = document.getElementById('historyChartCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const history = JSON.parse(localStorage.getItem('smart_agri_history') || '[]').slice(0, 10).reverse();
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (history.length < 2) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '12px ' + getComputedStyle(document.body).fontFamily;
+        ctx.fillText('Minimum 2 historical data points required to render telemetry trends.', 20, 95);
+        return;
+      }
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const padding = 35;
+      const stepX = (w - padding * 2) / (history.length - 1);
+
+      // Draw Grid
+      ctx.strokeStyle = '#f1f5f9';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding + (i * (h - padding * 2)) / 4;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(w - padding, y);
+        ctx.stroke();
+      }
+
+      // Draw Moisture Line (Green)
+      drawLineSeries(ctx, history.map(r => r.moisture), '#15803d', 0, 100, stepX, padding, h);
+
+      // Draw Temp Line (Orange)
+      drawLineSeries(ctx, history.map(r => r.temp), '#f59e0b', 0, 50, stepX, padding, h);
+
+      // Chart Legend
+      ctx.fillStyle = '#15803d';
+      ctx.fillRect(w - 180, 12, 10, 10);
+      ctx.fillText('Moisture (%)', w - 165, 21);
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(w - 90, 12, 10, 10);
+      ctx.fillText('Temp (°C)', w - 75, 21);
+    }
+
+    function drawLineSeries(ctx, data, color, minVal, maxVal, stepX, padding, h) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      data.forEach((val, idx) => {
+        const x = padding + idx * stepX;
+        const normalized = (val - minVal) / (maxVal - minVal);
+        const y = (h - padding) - normalized * (h - padding * 2);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Point dots
+      ctx.fillStyle = color;
+      data.forEach((val, idx) => {
+        const x = padding + idx * stepX;
+        const normalized = (val - minVal) / (maxVal - minVal);
+        const y = (h - padding) - normalized * (h - padding * 2);
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    /* ==========================================================================
+       8. SETTINGS & PERSISTENCE
+       ========================================================================== */
+    function saveSettings() {
+      const settings = {
+        farmName: document.getElementById('settingFarmName').value,
+        farmerName: document.getElementById('settingFarmerName').value,
+        simInterval: document.getElementById('settingSimInterval').value,
+        tempUnit: document.getElementById('settingTempUnit').value
+      };
+      localStorage.setItem('smart_agri_settings', JSON.stringify(settings));
+
+      clearInterval(simulationTimer);
+      const intervalSec = parseInt(settings.simInterval, 10);
+      if (intervalSec > 0) {
+        simulationTimer = setInterval(() => {
+          simulateRandomFieldData();
+        }, intervalSec * 1000);
+      }
+    }
+
+    function loadSettings() {
+      const saved = localStorage.getItem('smart_agri_settings');
+      if (saved) {
+        const s = JSON.parse(saved);
+        if (s.farmName) document.getElementById('settingFarmName').value = s.farmName;
+        if (s.farmerName) document.getElementById('settingFarmerName').value = s.farmerName;
+        if (s.simInterval) document.getElementById('settingSimInterval').value = s.simInterval;
+        if (s.tempUnit) document.getElementById('settingTempUnit').value = s.tempUnit;
+
+        const intervalSec = parseInt(s.simInterval, 10);
+        if (intervalSec > 0) {
+          simulationTimer = setInterval(() => {
+            simulateRandomFieldData();
+          }, intervalSec * 1000);
+        }
+      }
+
+      const key = localStorage.getItem('smart_agri_gemini_key');
+      if (key) {
+        document.getElementById('geminiApiKeyInput').value = key;
+        document.getElementById('aiModeStatusBadge').innerText = 'Gemini 2.5 Flash Online';
+        document.getElementById('aiModeStatusBadge').style.background = '#dcfce7';
+        document.getElementById('aiModeStatusBadge').style.color = '#15803d';
+      }
+    }
+
+    function saveGeminiKey() {
+      const key = document.getElementById('geminiApiKeyInput').value.trim();
+      localStorage.setItem('smart_agri_gemini_key', key);
+      const st = document.getElementById('apiKeySaveStatus');
+      st.style.display = 'block';
+      setTimeout(() => st.style.display = 'none', 2500);
+
+      if (key) {
+        document.getElementById('aiModeStatusBadge').innerText = 'Gemini 2.5 Flash Online';
+        document.getElementById('aiModeStatusBadge').style.background = '#dcfce7';
+        document.getElementById('aiModeStatusBadge').style.color = '#15803d';
+      } else {
+        document.getElementById('aiModeStatusBadge').innerText = 'Local Heuristic Fallback';
+        document.getElementById('aiModeStatusBadge').style.background = '#f1f5f9';
+        document.getElementById('aiModeStatusBadge').style.color = '#0f172a';
+      }
+    }
+
+    function loadTelemetryInputs() {
+      document.getElementById('inputMoisture').value = DEFAULT_SENSORS.moisture;
+      document.getElementById('inputTemp').value = DEFAULT_SENSORS.temp;
+      document.getElementById('inputHumidity').value = DEFAULT_SENSORS.humidity;
+      document.getElementById('inputPH').value = DEFAULT_SENSORS.ph;
+      document.getElementById('inputN').value = DEFAULT_SENSORS.n;
+      document.getElementById('inputP').value = DEFAULT_SENSORS.p;
+      document.getElementById('inputK').value = DEFAULT_SENSORS.k;
+    }
+
+    /* ==========================================================================
+       9. VERY SMALL DOWNLOAD BUTTON FUNCTIONALITY (Requirement 20)
+       ========================================================================== */
+    function downloadDashboardHTML() {
+      const completeHTML = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+      const blob = new Blob([completeHTML], { type: "text/html;charset=utf-8" });
+      const downloadLink = document.createElement("a");
+      const timestamp = new Date().toISOString().slice(0, 10);
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = `smart-agri-dashboard-${timestamp}.html`;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+      URL.revokeObjectURL(downloadLink.href);
+    }
+  </script>
+
+</body></html>
